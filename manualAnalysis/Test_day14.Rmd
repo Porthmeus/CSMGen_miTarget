@@ -1,0 +1,428 @@
+---
+title: Analysis of day 14
+author: Jan Taubenheim
+date: "`r Sys.Date()`"
+output: 
+        html_document:
+                toc: true
+                theme: united
+---
+
+
+```{r knitrSetup}
+
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, fig.width = 10, fig.height=5)
+```
+
+```{r libraries}
+
+require(ggplot2)
+require(data.table)
+require(FactoMineR)
+require(factoextra)
+require(nnet)
+require(car)
+
+```
+
+
+```{r loadData}
+
+fva <- readRDS("../results/data/FVA/MatjesAbsorption.colormore22-FVA_zeroBiomass.RDS")
+fvaDist <- "../results/data/FVA/MatjesAbsorption.colormore22_zeroBiomass_Rxndist.tar.gz"
+fba <- read.csv("../results/data/FBA/MatjesAbsorption.colormore22-fluxes.csv", row.names=1)
+
+meta <- fread("../resources/META_emed_future.csv")
+meta[,PatientID_Time := paste(PatientID, Time_seq, sep ="_")]
+meta <- meta[Time_seq != -1,]
+clinic <- fread("../resources/ClinicalData.csv", drop=1)
+meta <- merge(meta,clinic, by="PatientID_Time", all.x=TRUE, suffix = c(".meta",""))
+
+
+# remove degraded samples
+blcklst <- fread("../resources/sampleBlacklist.csv")
+blckSmpls <- blcklst[relevance < 2, Sample]
+#blckSmpls <- c(blckSmpls, "H18597.L1_S29_L003","H18606.L1_S38_L004")
+meta <- meta[!(SeqID %in% blckSmpls),]
+
+```
+
+
+# Primer
+
+To get things clear here a plot how the HB/Mayo behaves over time.
+
+```{r HB_Mayo}
+
+
+pp <- ggplot(meta, aes(x=Time_seq, y = HB_Mayo_impu, color = Response)) +
+    geom_point() +
+    geom_smooth(method="glm",method.args = list(family="quasipoisson")) +
+    facet_wrap(~Diagnosis)
+pp
+
+```
+
+
+# PCA
+
+Lets do the PCA analysis only on the 14days data for the FVA range.
+
+```{r PCA14d}
+
+pca_dat <- fva[,meta[Time_seq == 14 & Tissue == "Biopsy", SeqID], "range"]
+pca_dat <- pca_dat[apply(pca_dat,1,var) > 1E-6,]
+# remove highly correlated reactions
+pca_cor <- cor(t(pca_dat))
+pca_cor <- is.na(pca_cor) | abs(pca_cor) > 0.8
+pca_cor <- cbind(as.data.frame(t(combn(rownames(pca_cor),2))), cor = pca_cor[lower.tri(pca_cor)])
+pca_cor <- data.table(pca_cor)
+sel <- pca_cor[,any(cor),by=V2]
+sel <-sel[V1 == FALSE,V2]
+
+pca_dat <- pca_dat[sel,]
+
+pca <- prcomp(t(pca_dat),scale=TRUE, center=TRUE)
+pca_d <- merge(data.table(pca[["x"]], keep.rownames=TRUE), meta, by.x="rn",by.y="SeqID")
+
+contrib  <- sapply(1:ncol(pca_dat), function(x) {
+                       pca[["rotation"]][,x] * (pca_dat[,x] - summary(pca)[["center"]])/summary(pca)[["scale"]]
+})
+colnames(contrib) <- paste0("PC", 1:ncol(contrib))
+
+contribOrder <- apply(contrib, 2, function(x) rownames(contrib)[order(abs(x), decreasing=TRUE)])
+
+
+pp <- ggplot(pca_d, aes(x=PC1,y=PC2, color = HB_Mayo_impu <=5)) +
+    geom_point(size=3, alpha=0.5) +
+    facet_wrap(~Diagnosis)
+pp
+
+
+pp <- ggplot(pca_d, aes(x=PC1,y=PC2, color = Response)) +
+    geom_point(size=3, alpha=0.5) + 
+    facet_wrap(~Diagnosis) 
+pp
+
+setkey(meta, "SeqID")
+fviz_pca_biplot(pca,
+                select.var=list( contrib=30),
+                repel=TRUE,
+                habillage = meta[rownames(pca[["x"]]), HB_Mayo_impu <= 5],
+                geom.ind = c("point"))
+fviz_pca_biplot(pca,
+                select.var=list( contrib=30),
+                repel=TRUE,
+                habillage = meta[rownames(pca[["x"]]), Response],
+                geom.ind = c("point"))
+
+
+```
+
+Not so much to see here. There is a slight clustering visible in terms of controls sticking closer together, but a clear distinction is missing.
+
+Lets look across all time points once more to get an idea about the data set.
+
+
+```{r PCAtimeSplit}
+
+pca_dat <- fva[,meta[SeqID %in% colnames(fva) & Tissue == "Biopsy", SeqID], "range"]
+pca_dat <- pca_dat[apply(pca_dat,1,var) > 1E-6,]
+
+# remove highly correlated reactions
+pca_cor <- cor(t(pca_dat))
+pca_cor <- is.na(pca_cor) | abs(pca_cor) > 0.8
+pca_cor <- cbind(as.data.frame(t(combn(rownames(pca_cor),2))), cor = pca_cor[lower.tri(pca_cor)])
+pca_cor <- data.table(pca_cor)
+sel <- pca_cor[,any(cor),by=V2]
+sel <-sel[V1 == FALSE,V2]
+
+pca_dat <- pca_dat[sel,]
+
+
+pca <- prcomp(t(pca_dat),scale=TRUE, center=TRUE)
+pca_d <- merge(data.table(pca[["x"]], keep.rownames=TRUE), meta, by.x="rn",by.y="SeqID")
+
+
+pp <- ggplot(pca_d, aes(x=PC1,y=PC2, color = HB_Mayo_impu <=5)) +
+    geom_point(size=3, alpha=0.5) +
+    facet_wrap(~Diagnosis,scale="free")
+pp
+
+
+
+pp <- ggplot(pca_d, aes(x=PC1,y=PC2, color = Response)) +
+    geom_point(size=3, alpha=0.5) + 
+    facet_wrap(~Diagnosis, scale="free") 
+pp
+
+
+setkey(meta, "SeqID")
+fviz_pca_biplot(pca,
+                select.var=list( contrib=30),
+                repel=TRUE,
+                habillage = meta[rownames(pca[["x"]]), HB_Mayo_impu <= 5],
+                geom.ind = c("point"))
+fviz_pca_biplot(pca,
+                select.var=list( contrib=30),
+                repel=TRUE,
+                habillage = meta[rownames(pca[["x"]]), Response],
+                geom.ind = c("point"))
+
+pca_d <- data.table(reshape2::melt(pca[["x"]][,1:10], varnames=c("SeqID","PC")))
+pca_d <- merge(pca_d,meta, by = "SeqID")
+pp <- ggplot(pca_d, aes(y=value, x = HB_Mayo_impu)) +
+    geom_point() +
+    geom_smooth(method="loess") +
+    facet_wrap(PC~Diagnosis)
+pp
+
+pp <- ggplot(pca_d[PC =="PC1",], aes(x=value, y = HB_Mayo_impu)) +
+    geom_point() +
+    geom_smooth(method="glm", method.args = list(family = poisson )) +
+    facet_wrap(~Diagnosis, scale = "free")
+pp
+
+pp <- ggplot(pca_d[PC =="PC1",], aes(x=value, y = HB_Mayo_impu, color = Response)) +
+    geom_point() +
+    geom_smooth(method="glm", method.args = list(family = poisson )) +
+    facet_wrap(~Diagnosis, scale = "free")
+pp
+
+pp + facet_wrap(~PatientID, scale = "free")
+
+
+
+
+```
+
+OK this is interesting and there seems to be a rather CU specific signal in the data. I will check on this specifically.
+
+```{r PCA_CUonly}
+
+pca_dat <- fva[,meta[SeqID %in% colnames(fva) & Tissue == "Biopsy" & Diagnosis == "CU", SeqID], "range"]
+pca_dat <- pca_dat[apply(pca_dat,1,var) > 1E-6,]
+
+# remove highly correlated reactions
+pca_cor <- cor(t(pca_dat))
+pca_cor <- is.na(pca_cor) | abs(pca_cor) > 0.8
+pca_cor <- cbind(as.data.frame(t(combn(rownames(pca_cor),2))), cor = pca_cor[lower.tri(pca_cor)])
+pca_cor <- data.table(pca_cor)
+sel <- pca_cor[,any(cor),by=V2]
+sel <-sel[V1 == FALSE,V2]
+
+pca_dat <- pca_dat[sel,]
+
+
+pca <- prcomp(t(pca_dat),scale=TRUE, center=TRUE)
+pca_d <- merge(data.table(pca[["x"]], keep.rownames=TRUE), meta, by.x="rn",by.y="SeqID")
+
+
+pp <- ggplot(pca_d, aes(x=PC1,y=PC2, color = HB_Mayo_impu <=5)) +
+    geom_point(size=3, alpha=0.5) 
+pp
+pp +
+    facet_wrap(~factor(Time_seq), scale="free")
+
+
+pp <- ggplot(pca_d, aes(x=PC1,y=PC5, color = Response)) +
+    geom_point(size=3, alpha=0.5) 
+pp
+pp + 
+    facet_wrap(~factor(Time_seq), scale="free")
+
+
+setkey(meta, "SeqID")
+fviz_pca_biplot(pca,
+                select.var=list( contrib=30),
+                repel=TRUE,
+                habillage = meta[rownames(pca[["x"]]), HB_Mayo_impu <= 5],
+                geom.ind = c("point"))
+fviz_pca_biplot(pca,
+                select.var=list( contrib=30),
+                repel=TRUE,
+                habillage = meta[rownames(pca[["x"]]), Response],
+                geom.ind = c("point"))
+
+
+```
+
+
+# PCA with min max data
+
+One could try to not transform the data in any way and simply use the data as is.
+
+```{r PCAMinMax}
+
+
+pca_dat <- rbind(fva[,meta[SeqID %in% colnames(fva) & Tissue == "Biopsy", SeqID], "min"],fva[,meta[SeqID %in% colnames(fva) & Tissue == "Biopsy", SeqID], "max"])
+rownames(pca_dat) <- paste0(rownames(pca_dat), c(rep("_min",dim(fva)[[1]]),rep("_max",dim(fva)[[1]])))
+pca_dat <- pca_dat[apply(pca_dat,1,var) > 1E-6,]
+
+# remove highly correlated reactions
+pca_cor <- cor(t(pca_dat))
+pca_cor <- is.na(pca_cor) | abs(pca_cor) > 0.8
+pca_cor <- cbind(as.data.frame(t(combn(rownames(pca_cor),2))), cor = pca_cor[lower.tri(pca_cor)])
+pca_cor <- data.table(pca_cor)
+sel <- pca_cor[,any(cor),by=V2]
+sel <-sel[V1 == FALSE,V2]
+
+pca_dat <- pca_dat[sel,]
+
+pca <- prcomp(t(pca_dat),scale=TRUE, center=TRUE)
+pca_d <- merge(data.table(pca[["x"]], keep.rownames=TRUE), meta, by.x="rn",by.y="SeqID")
+
+
+pp <- ggplot(pca_d, aes(x=PC1,y=PC2, color = HB_Mayo_impu <=5)) +
+    geom_point(size=3, alpha=0.5) +
+    facet_wrap(~Diagnosis,scale="free")
+pp
+pp + facet_grid(Diagnosis~factor(Time_seq))
+
+
+pp <- ggplot(pca_d, aes(x=PC1,y=PC2, color = Response)) +
+    geom_point(size=3, alpha=0.5) + 
+    facet_wrap(~Diagnosis, scale="free") 
+pp
+pp + facet_grid(Diagnosis~factor(Time_seq))
+
+setkey(meta, "SeqID")
+fviz_pca_biplot(pca,
+                select.var=list( contrib=30),
+                repel=TRUE,
+                habillage = meta[rownames(pca[["x"]]), HB_Mayo_impu <= 5],
+                geom.ind = c("point"))
+fviz_pca_biplot(pca,
+                select.var=list( contrib=30),
+                repel=TRUE,
+                habillage = meta[rownames(pca[["x"]]), Response],
+                geom.ind = c("point"))
+
+pca_d <- data.table(reshape2::melt(pca[["x"]][,1:10], varnames=c("SeqID","PC")))
+pca_d <- merge(pca_d,meta, by = "SeqID")
+
+pp <- ggplot(pca_d, aes(y=value, x = HB_Mayo_impu)) +
+    geom_point() +
+    geom_smooth(method="loess", k = 10) +
+    facet_wrap(PC~Diagnosis)
+pp
+
+```
+
+
+Ok there seems to be a little more information in that kind of data. 
+
+# PCA FBA
+
+```{r PCA_FBA}
+
+pca_dat <- fba[,meta[SeqID %in% colnames(fba) & Tissue == "Biopsy",SeqID]]
+pca_dat <- pca_dat[apply(pca_dat,1,var) > 1E-6,]
+
+# remove highly correlated reactions
+pca_cor <- cor(t(pca_dat))
+pca_cor <- is.na(pca_cor) | abs(pca_cor) > 0.8
+pca_cor <- cbind(as.data.frame(t(combn(rownames(pca_cor),2))), cor = pca_cor[lower.tri(pca_cor)])
+pca_cor <- data.table(pca_cor)
+sel <- pca_cor[,any(cor),by=V2]
+sel <-sel[V1 == FALSE,V2]
+
+pca_dat <- pca_dat[sel,]
+
+pca <- prcomp(t(pca_dat),scale=TRUE, center=TRUE)
+fviz_screeplot(pca)
+pca_d <- merge(data.table(pca[["x"]], keep.rownames=TRUE), meta, by.x="rn",by.y="SeqID")
+
+
+pp <- ggplot(pca_d, aes(x=PC1,y=PC2, color = HB_Mayo_impu <=5)) +
+    geom_point(size=3, alpha=0.5) +
+    facet_wrap(~Diagnosis,scale="free")
+pp
+pp + facet_grid(Diagnosis~factor(Time_seq))
+
+
+pp <- ggplot(pca_d, aes(x=PC1,y=PC2, color = Response)) +
+    geom_point(size=3, alpha=0.5) + 
+    facet_wrap(~Diagnosis, scale="free") 
+pp
+pp + facet_grid(Diagnosis~factor(Time_seq),scale="free")
+
+setkey(meta, "SeqID")
+fviz_pca_biplot(pca,
+                select.var=list( contrib=30),
+                repel=TRUE,
+                habillage = meta[rownames(pca[["x"]]), HB_Mayo_impu <= 5],
+                geom.ind = c("point"))
+fviz_pca_biplot(pca,
+                select.var=list( contrib=30),
+                repel=TRUE,
+                habillage = meta[rownames(pca[["x"]]), Response],
+                geom.ind = c("point"))
+
+pca_d <- data.table(reshape2::melt(pca[["x"]][,1:10], varnames=c("SeqID","PC")))
+pca_d <- merge(pca_d,meta, by = "SeqID")
+
+pp <- ggplot(pca_d, aes(y=value, x = HB_Mayo_impu)) +
+    geom_point() +
+    geom_smooth(method="loess", k = 10) +
+    facet_wrap(PC~Diagnosis)
+pp
+```
+
+Thats rather shitty - compared to the results obtained from the FVA.
+
+
+# FVA range reaction to predict response
+
+```{r multinomialTests}
+
+for(tm in c(0,14)){
+multnom_dat <- fva[,meta[Time_seq == tm & Tissue == "Biopsy", SeqID], "range"]
+multnom_dat <- multnom_dat[apply(multnom_dat,1,var) > 1E-6,]
+multnom_dat <- reshape2::melt(multnom_dat)
+multnom_dat <- merge(data.table(multnom_dat),meta, by.x="sample",by.y="SeqID")
+multnom_dat[,Response := relevel(factor(Response), "R")]
+multnom_dat[,Diagnosis := factor(Diagnosis)]
+
+models <- list()
+stats <- list()
+dmp <- capture.output(mod0 <- multinom(data = meta[Time_seq ==tm & Tissue == "Biopsy",], Response ~ Diagnosis))
+for(reac in unique(multnom_dat[,rxn])){
+    dat <- multnom_dat[rxn == reac,]
+    dmp <- capture.output(mod <- multinom(data = dat, Response~Diagnosis*value))
+    LLR <- anova(mod0,mod)[["Pr(Chi)"]][2]
+    if(LLR < 0.05){
+        models[[reac]] <- mod
+        ano <- Anova(mod, type = 3)
+        sumMod <- summary(mod)
+        z <- sumMod$coefficients/sumMod$standard.errors
+        p <- (1 - pnorm(abs(z), 0, 1)) * 2
+        s<- cbind(rxn = reac,t(p)[-1,], as.data.frame(ano))
+        s <- cbind(coef = rownames(s), s)
+        stats[[reac]] <- s
+    }
+}
+
+stats <- data.table(do.call(rbind, stats))
+stats[,padj := p.adjust(`Pr(>Chisq)`, method = "BH"), by = coef]
+stats[,NR_adj := p.adjust(NR, method = "BH"), by = coef]
+
+reac <- stats[padj <= 0.05 & NR_adj <= 0.05, rxn]
+if(length(reac) > 0){
+DT::datatable(stats[padj <= 0.05 & NR_adj <= 0.05,])
+
+pp <- ggplot(multnom_dat[rxn %in% reac,], aes(x=Response, y = value, fill = Diagnosis)) +
+    geom_boxplot() + 
+    geom_jitter(height = 0, width = 0.25) +
+    facet_wrap(~rxn, scale ="free") +
+    ggtitle(paste0(tm," days after treatment start"))
+print(pp)
+
+lapply(models[reac],function(x) exp(coef(x)))
+} else {
+    print("No significant reactions")
+}
+}
+
+```
+

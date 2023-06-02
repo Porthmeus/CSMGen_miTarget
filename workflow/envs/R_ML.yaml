@@ -1,0 +1,12 @@
+channels:
+    - conda-forge
+    - bioconda
+    - r
+dependencies:
+    - r 
+    - r-data.table
+    - r-caret
+    - r-ranger
+    - r-elasticnet
+    - r-kernlab
+    - r-arm

@@ -1,0 +1,518 @@
+---
+title: Combination of results from different analysis for metabolic changes in IBD patients
+author: Jan Taubenheim
+date: "`r Sys.Date()`"
+output: 
+    rmdformats::downcute:
+        highlight: tango
+        use_bookdown: TRUE
+bibliography: ["/home/taube/Documents/References/Bibtex/My_Library.bib"]
+link-citations: true
+---
+
+
+```{r knitrSetup, include=FALSE, echo = FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, fig.width = 10, fig.height=5)
+```
+
+```{r loadLibraries}
+
+require(data.table)
+require(ggplot2)
+require(ComplexUpset)
+require(clusterProfiler)
+require(psych)
+require(lme4)
+require(lmerTest)
+require(pheatmap)
+
+```
+
+
+# Introduction
+
+The general idea is to find changes in the metabolic network of IBD patients which are associated with a change the disease activity scores. I analysed data sets for the reaction activity scores, the presence/absence of reactions after context specific model reconstruction and FVA analysis using a reaction based GLMM approach. This results in sets of reactions, which are associated with the disease activity. Furthermore, I have made set enrichments for the subsystems - again something which can be compared for the different analysis.
+
+# Results
+
+## Reaction association
+
+First lets look at the reactions which are shared between the different analysis.
+
+```{r loadData}
+
+coefs.rxnExpr <- fread("./Statistics/results/rxnExpr.GLMM.Remission.intervention_coefs.csv")
+sigs.rxnExpr <- coefs.rxnExpr[padj < 0.05,]
+coefs.PA <- fread("./Statistics/results/PA.GLMM.Remission.intervention_coefs.csv")
+sigs.PA <- coefs.PA[padj < 0.05,]
+coefs.FVA <- fread("./Statistics/results/FVA.GLMM.Remission.intervention_coefs.csv")
+sigs.FVA <- coefs.FVA[padj < 0.05,]
+
+sigs <- list(rxnExpr = sigs.rxnExpr,
+             PA = sigs.PA,
+             FVA = sigs.FVA)
+
+# annotations
+subsystems <- fread("./Statistics/dat/subsystems.csv")
+rxnAnno <- fread("../../resources/recon-store-reactions-1.tsv")
+
+```
+
+Here is an upset plot for the reactions.
+
+```{r createVennMat}
+
+rxns <- unique(c(subsystems[,reaction], unlist(sapply(sigs,function(x) x[,rxn]))))
+
+vennMat <- matrix(0, nrow = length(rxns), ncol = length(sigs), dimnames = list(rxns, names(sigs)))
+for(set.nm in names(sigs)){
+    set <- sigs[[set.nm]]
+    vennMat[set[,rxn],set.nm] <- 1
+}
+
+upset(as.data.frame(vennMat), intersect = colnames(vennMat))
+
+```
+
+There are `r sum(rowSums(vennMat) == ncol(vennMat))` reactions which are associated in all analysis with Remission changes. Here is the complete list: `r DT::datatable(rxnAnno[abbreviation %in% rownames(vennMat[rowSums(vennMat) == ncol(vennMat),]),])`
+
+From all the reactions we can make another hypergeometric enrichment - which would be an overall assessment of the analysis performed.
+
+```{r GeomEnrichment, fig.height = 7}
+
+hgt <- enricher(unique(unlist(sapply(sigs, function(x) x[,rxn]))), TERM2GENE = subsystems)
+dotplot(hgt, x = "Count", showCategory = nrow(data.frame(hgt)))
+
+```
+
+Additionally, we can summarize the results from all data sets and do a GSEA as well.
+
+```{r GSEAEnrichment, fig.height = 7}
+
+# I need the cluster information to expand the estimates accordingly
+cluster.rxnExpr <- fread("./Statistics/results/rxnExpr_DBSCAN_Cluster.csv")
+cluster.PA <- fread("./Statistics/results/PA_DBSCAN_Cluster.csv")
+cluster.FVA <- fread("./Statistics/results/FVA_DBSCAN_Cluster.csv")
+
+# merge the cluster with the coef table
+coefs.rxnExpr <- merge(coefs.rxnExpr,
+                       cluster.rxnExpr[,.(rxn,rep.rxn)],
+                       by.x = "rxn",
+                       by.y = "rep.rxn",
+                       suffix = c("",".clustered"),
+                       keep.x = TRUE)
+coefs.PA <- merge(coefs.PA,
+                       cluster.PA[,.(rxn,rep.rxn)],
+                       by.x = "rxn",
+                       by.y = "rep.rxn",
+                       suffix = c("",".clustered"),
+                       keep.x = TRUE)
+coefs.FVA <- merge(coefs.FVA,
+                       cluster.FVA[,.(rxn,rep.rxn)],
+                       by.x = "rxn",
+                       by.y = "rep.rxn",
+                       suffix = c("",".clustered"),
+                       keep.x = TRUE)
+
+# get the common columns
+clmns <- intersect(colnames(coefs.rxnExpr), colnames(coefs.PA))
+clmns <- intersect(colnames(coefs.FVA), clmns)
+# merge on 
+coefs.all <- rbind(
+                   cbind(coefs.rxnExpr[,..clmns], data.set = "rxnExpr"),
+                   cbind(coefs.PA[,..clmns], data.set = "PA"),
+                   cbind(coefs.FVA[,..clmns], data.set = "FVA"))
+
+gseaTab <- coefs.all[,.(Estimate.sum = sum(Estimate)), by = rxn.clustered]
+gseaVector <- gseaTab[,Estimate.sum]
+names(gseaVector) <- gseaTab[,rxn.clustered]
+gseaVector <- sort(gseaVector, decreasing = TRUE)
+
+gsea <- GSEA(gseaVector,
+             TERM2GENE = subsystems,
+             minGSSize = 3,
+             maxGSSize = 1E6,
+             verbose = FALSE,
+             pvalueCutoff = 0.05)
+
+if(nrow(data.frame(gsea)) > 0){
+    ridgeplot(gsea)
+}
+
+
+```
+
+There question remains, how to display that in a concise manner - the answer: in a simple boxplot for all the significant reactions in the subsystems and their estimates.
+
+```{r subsystemBoxplot}
+
+sig.subs<- unique(c(data.frame(hgt)[,"ID"], data.frame(gsea)[,"ID"]))
+
+coefs.all.subs <- merge(coefs.all, subsystems, by.x = "rxn.clustered", by.y = "reaction", keep.x = TRUE)
+sub.order <- coefs.all.subs[,.(od = median(Estimate)), by = subsystem]
+coefs.all.subs[,subsystem := factor(subsystem, level = sub.order[order(od), subsystem])]
+
+plt.sub.est.all <- ggplot(coefs.all.subs[subsystem %in% sig.subs,], aes(x= sin(Estimate)*log(abs(1/Estimate)+1), y = subsystem)) +
+    geom_vline(xintercept = 0, color = "red", linetype = 2)+
+    geom_boxplot(fill = NA) +
+    ggtitle("All rxns")+
+    theme_bw()
+plt.sub.est.sig <- ggplot(coefs.all.subs[subsystem %in% sig.subs & padj <=0.05,], aes(x= sin(Estimate)*log(abs(1/Estimate)+1), y = subsystem)) +
+    geom_vline(xintercept = 0, color = "red", linetype = 2)+
+    geom_boxplot(fill = NA) +
+    ggtitle("Sig. rxns")+
+    theme_bw()
+cowplot::plot_grid(plt.sub.est.all, plt.sub.est.sig)
+
+```
+
+
+## Subsystem association
+
+Similar we can make a summary of the subsystems by comparing the different subsystems which have been enriched in the different analysis and with GSEA and HGT.
+
+```{r subsetUpset}
+
+gsea.rxnExpr <- readRDS("Statistics/results/rxnExpr.GSEA.Remission.intervention_GSEAResult.RDS")
+gsea.PA <- readRDS("Statistics/results/PA.GSEA.Remission.intervention_GSEAResult.RDS")
+gsea.FVA <- readRDS("Statistics/results/FVA.GSEA.Remission.intervention_GSEAResult.RDS")
+
+vennMat.subsys <- matrix(0, ncol = 2*length(sigs), nrow = length(unique(subsystems[,subsystem])),
+                         dimnames = list(unique(subsystems[,subsystem]),
+                                         paste0(sort(rep(c("hgt.","gsea."), length(sigs))), rep(names(sigs),2)))
+                         )
+for(n in names(sigs)){
+    hgt <- enricher(sigs[[n]][,rxn],TERM2GENE = subsystems)
+    vennMat.subsys[data.frame(hgt)[,"ID"], paste0("hgt.",n)] <- 1
+    gsea <- get(paste0("gsea.",n))
+    vennMat.subsys[data.frame(gsea)[,"ID"], paste0("gsea.",n)] <- 1
+}
+
+upset(as.data.frame(vennMat.subsys), intersect = colnames(vennMat.subsys))
+
+dt.vennMat.subsys <- data.table(vennMat.subsys, total = rowSums(vennMat.subsys), keep.rownames = TRUE)
+
+DT::datatable(dt.vennMat.subsys[total >= 1,])
+```
+
+There is(are) exactly `r sum(rowSums(vennMat.subsys) == ncol(vennMat.subsys))` subsystem(s) which is(are) found across all analysis. That is:
+
+```{r subsysTable}
+
+tbl.subsys <- rxnAnno[subsystem %in% rownames(vennMat.subsys)[rowSums(vennMat.subsys) == ncol(vennMat.subsys)],]
+DT::datatable(tbl.subsys)
+
+```
+
+## Diversity measures
+
+An interesting finding was, that generally there were more reactions which, if present/active, there was a reduction in disease activity. This can be either an effect that certain reactions are really blocked/reduced in activity if Remission scores are high or it is a result of a reduced metabolic diversity in higher inflammation states. To test that one can correlate the Remission score with the diversity measures of the different analysis.
+
+```{r diversity}
+
+diversity <- fread("Statistics/results/diversityMeasures.csv")
+pairs.panels(diversity[,.(Remission,Remission,HB_Mayo_impu,richness.PA, shannon.rxnExpr, shannon.FVA)],
+           method = "spearman",
+           stars = TRUE,
+           main = "Spearman's rho")
+
+```
+
+So there are slight correlation, which poses the question, whether this signal remains, if tested in a linear mixed model to correct for PatientID independence.
+
+```{r GLMMDiversity}
+
+mod.richness.PA <- glmer(data = diversity,
+                        factor(Remission) ~ richness.PA + (1|PatientID),
+                        family = binomial)
+mod.shannon.rxnExpr <- glmer(data = diversity,
+                        factor(Remission) ~ shannon.rxnExpr + (1|PatientID),
+                        family = binomial)
+mod.shannon.FVA <- glmer(data = diversity,
+                        factor(Remission) ~ shannon.FVA + (1|PatientID),
+                        family = binomial)
+
+
+stats <- data.table(rbind(
+                          coef(summary(mod.richness.PA)),
+                          coef(summary(mod.shannon.rxnExpr)),
+                          coef(summary(mod.shannon.FVA))),
+                    keep.rownames = TRUE)[rn != "(Intercept)",]
+stats[,padj := p.adjust(`Pr(>|z|)`, method = "BH")]
+DT::datatable(stats)
+
+```
+
+There is a decrease of diversity in FVA ranges with the increase in Remission signal - that is interesting indeed.
+
+
+
+## PCA for clustering
+
+Another idea is to use the different significant reactions and use the data to make a ordination to get a feeling how well we can separate the different samples form each other by Remission scores.
+
+
+```{r PCA}
+
+rxnExpr <- read.csv("../results/RxnExpression/rxnExpr.GL10-L50-GU90.colormore3D.csv", row.names=1)
+rxnExpr <- rxnExpr[sigs.rxnExpr[,rxn],]
+PA <- read.csv("../results/ModelAnalysis/rxnIdMat.GL10-L50-GU90.MatjesAbsorption.colormore3D.csv", row.names=1)
+PA <- PA[sigs.PA[,rxn],]
+# make PA to integer
+PA2 <- PA
+PA2[,] <- 0
+PA2[PA == "True"] <- 1
+PA <- PA2
+FVA.range <- read.csv("../results/FVA/rangeFVA.GL10-L50-GU90.MatjesAbsorption.colormore3D.csv", row.names=1)
+FVA.range <- FVA.range[sigs.FVA[coef == "range",rxn],]
+FVA.center <- read.csv("../results/FVA/centerFVA.GL10-L50-GU90.MatjesAbsorption.colormore3D.csv", row.names=1)
+FVA.center <- FVA.center[sigs.FVA[coef == "center",rxn],]
+
+
+# transform the PA data to jaccard distances, otherwise it is less meaningful
+PA.dist <- as.matrix(dist(t(PA), method = "binary"))
+mat.all <- t(rbind(rxnExpr, PA.dist, FVA.center, FVA.range))
+
+pca <- prcomp(mat.all, scale = TRUE, center = TRUE)
+pca.x <- merge(data.table(pca[["x"]], keep.rownames = TRUE), diversity, by.x = "rn", by.y = "SeqID")
+pca.var <- pca[["sdev"]]^2/sum(pca[["sdev"]]^2)*100
+
+pca.plot <- ggplot(pca.x, aes(x=PC1,y=PC2)) +
+    #scale_color_gradient(low = "blue", high ="red") +
+    geom_point(aes(color = Remission, shape = Treatment),size = 3) +
+    theme_bw() +
+    facet_grid(~Diagnosis) +
+    labs(y = paste0("PC2 (", round(pca.var[2],2),"%)"),
+         x = paste0("PC1 (", round(pca.var[1],2),"%)"),
+         color = "Remission score")
+pca.plot
+
+pca.plot <- ggplot(pca.x, aes(x=PC1,y=PC2)) +
+    scale_color_gradient(low = "blue", high ="red") +
+    geom_point(aes(color = log10(Time_seq+1), shape =Remission),size = 3) +
+    theme_bw() +
+    facet_grid(~Diagnosis) +
+    labs(y = paste0("PC2 (", round(pca.var[2],2),"%)"),
+         x = paste0("PC1 (", round(pca.var[1],2),"%)"))
+pca.plot
+
+
+
+## only the rxns common in all 
+#rxns <- rownames(vennMat)[rowSums(vennMat) == ncol(vennMat)]
+#PA.common.dist <- as.matrix(dist(t(PA[rxns,])))
+#FVA.common.range  <- FVA.range[rownames(FVA.range) %in% rxns,]
+#FVA.common.center <- FVA.center[rownames(FVA.center) %in% rxns,]
+#rxnExpr.common <- rxnExpr[rxns,]
+#mat.common.all <- t(rbind(rxnExpr.common, PA.common.dist, FVA.common.range))
+#pca.common <- prcomp(mat.common.all, scale = TRUE, center = TRUE)
+##
+#pca.common.x <- merge(data.table(pca.common[["x"]], keep.rownames = TRUE), diversity, by.x = "rn", by.y = "SeqID")
+#pca.common.var <- pca.common[["sdev"]]^2/sum(pca.common[["sdev"]]^2)*100
+##
+#pca.common.plot <- ggplot(pca.common.x, aes(x=PC1,y=PC2)) +
+##    scale_color_gradient(low = "blue", high ="red") +
+#    geom_point(aes(color = Remission, shape = Diagnosis),size = 3) +
+#    theme_bw() +
+#    facet_grid(~Diagnosis) +
+#    labs(y = paste0("PC2 (", round(pca.common.var[2],2),"%)"),
+#         x = paste0("PC1 (", round(pca.common.var[1],2),"%)"),
+#         color = "Remission")
+#pca.common.plot
+
+```
+
+
+
+# Finding correlated exchange reactions
+
+In order to detect those metabolites which probably show an influence on the metabolic network and the significant reactions I correlated the values of the significant reactions for presence/absence and FVA center and range to the values of the values to the exchange reactions. I took the mean of the correlation coefficient for each rxn/Ex_rxn pair and kept the top 1% values for each rxn. I further calculated the mean of all coefficients for the significant rxns in the GLMMs and multiplied the two values. This left me with a value which describes the strength of the correlation for a rxns to the exchange of a metabolite and the strength of the rxn change to the Remission score. It thus gives us values to rank the different metabolites to the change in Remission.
+
+NOTE: I reversed the correlation coefficients and the GLMM coefficients for the results of the FVA center analysis in order to comply with a more readily interpretable result. This means more uptake of the metabolite will increase the be positively associated with an increase in the center of the rxn in question.
+
+
+```{r}
+
+all.Excors <- fread("Statistics/results/ExCorrelation_summary2.csv")
+topcor <- all.Excors[est_src == "Remission" & aim == "intervention",]
+
+
+
+# filter the exchange reactions, which show a significant effect which is different from 0
+topcor.ttests <- topcor[est_src == "Remission", .(p.value = tryCatch({
+                                                    t.test(score_abs_mean)[["p.value"]]
+                                                }, error = function(e){1.0}),
+                                                score_mean = mean(score_mean),
+                                                score_sum = sum(score_mean),
+                                                score_abs_mean = mean(score_abs_mean),
+                                                score_absabs_mean = mean(score_absabs_mean), # model estimates and correlations are transformed to positive values
+                                                score_abs_sum = sum(score_abs_mean),
+                                                score_absabs_sum = sum(score_absabs_mean),
+                                                NoRxns = .N,
+                                                Metabolite = unique(Metabolite),
+                                                r_direction_mean = mean(r_direction),
+                                                compartment = unique(compartment),
+                                                main.direction = unique(main.direction)
+                                                ), by = .(rn)] 
+topcor.ttests[,padj := p.adjust(p.value, method = "BH")]
+
+#topcor.ttests[,rxn_base := gsub("\\[.\\]","",rn)]
+
+#rxnAnno[,rxn_base := gsub("\\[.\\]","",abbreviation)]
+#topcor.ttests <- merge(topcor.ttests, rxnAnno[,.(rxn_base, description)], by = "rxn_base")
+#topcor.ttests[,description := gsub(".* of","", description)]
+#topcor.ttests[,Metabolite := factor(description, levels = unique(description[order(Remission_score_sum]))]
+#topcor.ttests[, compartment := "Colon"]
+#topcor.ttests[grep(".*\\[e\\]",rn), compartment := "Blood"]
+
+
+# get those which have the largest deviation from 0 (based on the ttest p.value)
+top100 <- unique(topcor.ttests[order(score_absabs_sum, decreasing = TRUE),rn])[1:100]#[padj < 0.05, rn][]
+#setkey(topcor.ttests, "rn")
+
+
+topcor[,Metabolite := factor(Metabolite, levels = unique(Metabolite)[order(topcor[,.(val = mean(score_abs_mean)), by = .(rn)][,val])])]
+
+plt.excor <- ggplot(topcor[est_src == "Remission" & rn %in% top100 ,], aes(x = Metabolite, y = sin(score_abs_mean)*log(abs(1/score_abs_mean)+1), fill = main.direction)) +
+    geom_boxplot() +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1 , vjust =1))+
+    facet_grid(~compartment, scale = "free_x")
+plt.excor
+
+
+DT::datatable(topcor.ttests)
+
+```
+
+```{r alternativePlots, fig.width = 16, fig.height = 8}
+
+# another way of plotting would be summing the scores by exchange reaction
+topcor.ttests[,Metabolite := factor(Metabolite,levels = unique(Metabolite[order(score_absabs_sum)]))]
+topcor.sums.plt <- ggplot(topcor.ttests[order(abs(score_absabs_sum),decreasing = T)[1:25],], 
+                          aes(x = score_absabs_sum,
+                              y = Metabolite,
+                              size = NoRxns,
+                              #color = main.direction,
+                              shape = compartment
+                              )) +
+    geom_point() +
+    geom_vline(linetype = 2, color = "red", xintercept = 0) +
+    labs(x = "Summed importance score", title = "Remission associated metabolites") +
+    theme_bw() 
+topcor.sums.plt
+
+topcor.ttests[,Metabolite := factor(Metabolite,levels = unique(Metabolite[order(score_absabs_mean)]))]
+topcor.sums.plt <- ggplot(topcor.ttests[order(abs(score_absabs_sum),decreasing = T)[1:25],], 
+                          aes(x = score_absabs_mean,
+                              y = Metabolite,
+                              size = NoRxns,
+                              #color = main.direction,
+                              shape = compartment
+                              )) +
+    geom_point() +
+    geom_vline(linetype = 2, color = "red", xintercept = 0) +
+    labs(x = "Mean importance score", title = "Remission associated metabolites") +
+    theme_bw() 
+topcor.sums.plt
+
+
+
+# relating these exchange reactions back to the subsystems
+
+topcor.subsystems <- topcor[rn %in% top100,
+                            .(score_mean = mean(score_mean,na.rm =TRUE),
+                              score_sum = sum(score_mean, na.rm = TRUE),
+                              score_absabs_mean = mean(score_absabs_mean, na.rm = TRUE),
+                              score_absabs_sum = sum(score_absabs_mean, na.rm = TRUE),
+                              N_rxns = .N,
+                             # compartment = unique(compartment),
+                             # Metabolite = unique(Metabolite),
+                              main.direction = unique(main.direction)
+                              ),
+                            by=.(Metabolite,subsystem)]
+
+sig.subs <- unique(c(data.frame(hgt)[,"ID"],data.frame(gsea)[,"ID"]))
+topcor.subsystems <- topcor.subsystems[subsystem %in% sig.subs,]
+
+topcor.sub.mat <- dcast(data.frame(topcor.subsystems),
+                        subsystem~Metabolite,
+                        value.var = "score_absabs_sum",
+                        fill = 0)
+
+if(sum(dim(topcor.sub.mat)) >2){
+
+    rownames(topcor.sub.mat) <- topcor.sub.mat[,1]
+    topcor.sub.mat<-  topcor.sub.mat[,-1]
+    if(ncol(topcor.sub.mat)==1){
+        pheatmap::pheatmap(topcor.sub.mat,
+                           scale = "row",
+                           cluster_cols = FALSE)
+        # get a new order for the metabolites
+        clust.subsystems <- hclust(dist(topcor.sub.mat))
+        # plot a dendogram
+        plot(clust.subsystems)
+        topcor.subsystems[,subsystem := factor(subsystem, levels = clust.subsystems$label[clust.subsystems$order])]
+    } else if(nrow(topcor.sub.mat) == 1){
+        pheatmap::pheatmap(topcor.sub.mat,
+                           scale = "row",
+                           cluster_rows = FALSE)
+        # get a new order for the metabolites
+        clust.metabolites <- hclust(dist(t(topcor.sub.mat)))
+        # plot a dendogram
+        plot(clust.metabolites)
+        topcor.subsystems[,Metabolite := factor(Metabolite, levels = clust.metabolites$label[clust.metabolites$order])]
+    } else {
+        pheatmap::pheatmap(topcor.sub.mat,
+                           scale = "row")
+        # get a new order for the metabolites
+        clust.subsystems <- hclust(dist(topcor.sub.mat))
+        clust.metabolites <- hclust(dist(t(topcor.sub.mat)))
+        # plot a dendogram
+        plot(clust.subsystems)
+        plot(clust.metabolites)
+        topcor.subsystems[,Metabolite := factor(Metabolite, levels = clust.metabolites$label[clust.metabolites$order])]
+        topcor.subsystems[,subsystem := factor(subsystem, levels = clust.subsystems$label[clust.subsystems$order])]
+    }
+}
+
+ggplot(topcor.subsystems, aes(x=Metabolite, y = subsystem, color = log10(N_rxns), size = score_absabs_sum)) +
+    geom_point(aes(shape = main.direction)) +
+    scale_color_gradient(high = "red",low = "blue")+
+    theme_bw()+
+#    ggtitle("Metabolites with no. of targets > 1") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1 , vjust =1))
+#    facet_grid(~compartment, scale = "free_x")
+
+
+
+#topcor.subsystems <- topcor.merge[rn %in% topcor.ttests[NoRxns == 1, rn] & !is.na(Remission_score),
+#                            .(Remission_score_mean = mean(Remission_score,na.rm =TRUE),
+#                              Remission_score_sum = sum(Remission_score, na.rm = TRUE),
+#                              N_rxns = .N),
+#                            by=.(rn,subsystem,main.direction)]
+#topcor.subsystems[, Remission_score_direction := (as.integer(Remission_score_sum>0)*2)-1]
+#topcor.subsystems[, compartment := "Colon"]
+#topcor.subsystems[grep(".*\\[e\\]",rn), compartment := "Blood"]
+#
+#ggplot(topcor.subsystems[Remission_score_direction <0,], aes(x=Metabolite, y = subsystem)) +
+#    scale_shape_manual(values=c(25,24))+
+#    geom_point(aes(shape = as.factor(Remission_score_direction), fill = main.direction, color = main.direction)) +
+##    scale_fill_gradient2(high = "red",low = "blue",mid = "light grey",midpoint = 0)+
+#    theme_bw()+
+#   # guides(shape = "none")+
+#    ggtitle("Metabolites with exactly 1 target") +
+#    theme(axis.text.x = element_text(angle = 45, hjust = 1 , vjust =1, size = 10))+
+#    facet_grid(~compartment, scale = "free_x")
+#
+#ggplot(topcor.subsystems[Remission_score_direction >0,], aes(x=Metabolite, y = subsystem)) +
+#    scale_shape_manual(values=c(24))+
+#    geom_point(aes(shape = as.factor(Remission_score_direction), fill = main.direction, color = main.direction)) +
+##    scale_fill_gradient2(high = "red",low = "blue",mid = "light grey",midpoint = 0)+
+#    theme_bw()+
+#   # guides(shape = "none")+
+#    ggtitle("Metabolites with exactly 1 target ") +
+#    theme(axis.text.x = element_text(angle = 45, hjust = 1 , vjust =1, size = 8))+
+#    facet_grid(~compartment, scale = "free_x")
+
+```

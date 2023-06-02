@@ -1,0 +1,16 @@
+# ignore the results and the logs directory for the github
+
+results/
+logs/
+temp/
+**/logs
+resources/
+manualAnalysis/Statistics/results # results from the manual analysis
+
+# ignore snakemake internal files
+
+.snakemake/
+
+# ignore cluster output
+
+*.out

@@ -1,0 +1,206 @@
+---
+title: FVA analysis for IBD patients 
+author: Jan Taubenheim
+date: "`r Sys.Date()`"
+output: 
+    rmdformats::downcute:
+        highlight: tango
+        use_bookdown: TRUE
+bibliography: ["/home/taube/Documents/References/Bibtex/My_Library.bib"]
+link-citations: true
+---
+
+
+```{r knitrSetup, include=FALSE, echo = FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, fig.width = 10, fig.height=5)
+```
+
+```{r loadLibraries}
+
+require(data.table)
+require(lme4)
+require(lmerTest)
+require(ggplot2)
+require(cowplot)
+require(clusterProfiler)
+require(ComplexUpset)
+
+```
+
+
+# Introduction
+
+I created context specific models of different IBD patients (longitudinal data) from biopsy samples. Afterwards I used FVA results to gain insights into the reactions which do significantly change with differing disease activities expressed as HB/Mayo scores. To this end I used linear mixed models to explain the HB/Mayo score by the change of flux ranges and centers for each reaction.
+
+# Results
+
+Again I used a clustering to de-correlate the reactions and to reduce the amount of tests. 
+
+```{r loadData}
+
+subsystems <- fread("./Statistics/dat/subsystems.csv")
+cluster <- fread("./Statistics/results/FVA_DBSCAN_Cluster.csv")
+stats <- fread("./Statistics/results/FVA_LMMsRandomPatient_fullCoefTable.csv")
+stats.padj <- stats[coef != "(Intercept)",]
+stats.padj[,padj := p.adjust(`Pr(>|t|)`, method = "BH")]
+sigs <- stats.padj[padj < 0.05,]
+
+```
+
+## Clustering 
+
+It might be a good idea to understand what the clustering has done to the data
+
+```{r clusteringPlots}
+
+cluster.size <- cluster[cluster != 0, .(cluster_size = .N), by=rep.rxn]
+cluster.size.hist <- ggplot(cluster.size, aes(x=cluster_size)) +
+    geom_histogram(binwidth = 10) +
+    labs(x= "Cluster size", y= "Counts", title = "Number of reactions in cluster")+
+    theme_bw()
+
+cluster.size.ecdf <- ggplot(cluster.size, aes(x=cluster_size)) +
+    stat_ecdf()+
+    labs(x= "Cluster size", y= "Fraction of data covered", title = "Number of reactions in cluster")+
+    theme_bw()
+
+cowplot::plot_grid(cluster.size.hist,
+                   cluster.size.ecdf,
+                   ncol = 2)
+
+```
+
+
+There are a lot of small clusters with only a few members, while there are also larger ones. But generally, that means clustering was done only on highly correlated reactions. A total of `r nrow(cluster.size)` has been generated.
+
+```{r clusterSmry}
+
+
+clusterSummary <- data.frame(
+                             rxns = nrow(cluster),
+                             cluster = max(cluster[,cluster]),
+                             rxns_in_cluster = nrow(cluster[cluster != 0,]),
+                             reduction = round((max(cluster[,cluster])+nrow(cluster[cluster == 0, ]))/ nrow(cluster),2),
+                             significant_rxns_and_cluster = length(unique((sigs[,rxn]))),
+                             significant_rxns = nrow(cluster[rep.rxn %in% sigs[,rxn],]), #
+                             largest_cluster = max(cluster.size[,cluster_size]),
+                             smallest_cluster = min(cluster.size[,cluster_size]),
+                             mean_cluster = round(mean(cluster.size[,cluster_size]),2),
+                             median_cluster = median(cluster.size[,cluster_size])
+                             )
+clusterSummary <- t(clusterSummary)
+colnames(clusterSummary) <- c("Value")
+DT::datatable(clusterSummary)
+
+```
+
+There is basically no significant reaction which has been associated to a cluster. That is interesting.
+
+## Overview
+
+```{r histPvals}
+
+sigs.hist.both <- ggplot(sigs, aes(x=Estimate, fill = coef)) + 
+    geom_histogram(binwidth=0.1)+
+    labs(x = "Coefficient for change in HB/Mayo if range/center is increased",
+         y = "Counts",
+         fill = "Change in") + 
+    theme_bw()
+
+sigs.hist.split <- ggplot(sigs, aes(x=Estimate, fill = coef)) + 
+    geom_histogram(binwidth=0.1)+
+    labs(x = "Coefficient for change in HB/Mayo if range is increased",
+         y = "Counts",
+         fill = "Change in") + 
+    facet_wrap(~coef, scale = "free")+
+    theme_bw() +
+    theme(legend.position = "none")
+
+sigs.hist <- plot_grid(sigs.hist.both, sigs.hist.split, ncol = 1)
+sigs.hist
+
+```
+
+Similar to the presence/absence of reactions, the histogram is shifted to the left. This shift is driven by the ranges of the FVA, meaning that an increase in flux variability of the different reactions is rather associated with better health. Again this speaks to a less flexible metabolism in higher inflammatory states. This shift is not observable in the center movement of the FVA - which means that increased engagement of the reactions do not predict the direction of the HB/Mayo prediction.
+
+## Subsystems association
+
+To get an overview of what subsystems are associated with the change in HB/Mayo we can associate the different subsystems to the significant reactions.
+
+```{r subsystems}
+
+# get all significant reactions
+rxns <- unique(sigs[rxn %in% cluster[cluster == 0, rep.rxn],rxn])
+rxns <- c(rxns,cluster[cluster != 0 & rep.rxn %in% sigs[,rxn],Rxn])
+
+# get the annotation for these reactions
+setkey(subsystems, "reaction")
+subs <- subsystems[rxns]
+
+#merge the stats with the reactions - use the clusterID to merge as well
+subs <- merge(subs, cluster, by.x = "reaction", by.y = "Rxn", all.x=T)
+subs <- merge(subs, sigs, by.x = "rep.rxn", by.y = "rxn") 
+
+# create a boxplot of the coefficients per subsystem
+subs_order <- subs[,.(mean_est = mean(Estimate)), by = subsystem]
+subs[,subsystems := factor(subsystem, levels=unique(subs_order[order(mean_est,decreasing=TRUE), subsystem]))]
+
+subs_jitterplot <- ggplot(subs, aes(x=subsystems, y= Estimate)) +
+        geom_hline(yintercept=0, color = "red", linetype=2)+
+        geom_boxplot(outlier.shape = NA)+
+        geom_jitter(height=0, width=0.3,aes(shape = coef, color = padj))+
+        theme_bw()+
+        theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1))+
+        scale_color_gradient(low = "red", high = "blue")
+subs_jitterplot
+
+```
+
+## Subsystem enrichment
+
+In order to test if and which of the subsystems are significantly associated I will perform an hypergeometric enrichment analysis. Note that I will use simply all reactions which are either significantly associated with the center or the range or both to HB/Mayo values.
+
+```{r geomEnrichment}
+
+hgt <- enricher(unique(sigs[,rxn]), TERM2GENE = subsystems)
+dotplot(hgt,x="Count") +
+        labs(x="Number of reactions", size = "RxnRatio") 
+
+
+```
+
+Additionally to the hypergeometric enrichment I will perform a gene set enrichment analysis (GSEA).
+
+```{r GSEA}
+
+gsea <- readRDS("Statistics/results/FVA_GSEASubsystems.RDS")
+ridgeplot(gsea, label_format=90) + theme(axis.text.y= element_text(size = 12))
+
+```
+
+## Comparing approaches
+
+Again there is overlap in the methods, so we can have a look at this.
+
+```{r upsetplot}
+
+# get the subsystems of each analysis
+subsystems.names <- unique(subsystems[,subsystem])
+tbl.gsea <- data.table(as.data.frame(gsea))
+tbl.hgt <- data.table(as.data.frame(hgt))
+
+mat <- matrix(FALSE, nrow = length(subsystems.names), ncol = 3, dimnames = list(x=subsystems.names, y=c("Counts","HGT","GSEA")))
+
+mat[unique(subs[!is.na(subsystem),subsystem]),"Counts"] <- TRUE
+mat[tbl.gsea[,ID], "GSEA"] <- TRUE
+mat[tbl.hgt[,ID], "HGT"] <- TRUE
+
+upset(as.data.frame(mat), intersect = colnames(mat))
+
+```
+
+Interestingly, there are `r nrow(mat[which(rowSums(mat) == 1 & mat[,"GSEA"]==1),])` subsystems which contain no single reaction which can be associated to HB/Mayo on its own, but in total contribute to the change in HB/Mayo. These are the following:`r names(which(rowSums(mat) == 1 & mat[,"GSEA"]==1))`. Furthermore, there are `r length(which(rowSums(mat)==2 & rowSums(mat[, c("Counts","HGT")]) == 2))` subsystems which are only present in the HGT analysis. These are: `r names(which(rowSums(mat)==2 & rowSums(mat[, c("Counts","HGT")]) == 2))`.
+
+In total there are `r nrow(mat[which(rowSums(mat) == ncol(mat)),])` subsystems which can be found as overlap in all analysis: `r rownames(mat[which(rowSums(mat) == ncol(mat)),])`.
+
+

@@ -1,0 +1,287 @@
+---
+title: Reaction presence/absence analysis for IBD patients 
+author: Jan Taubenheim
+date: "`r Sys.Date()`"
+output: 
+    rmdformats::downcute:
+        highlight: tango
+        use_bookdown: TRUE
+bibliography: ["/home/taube/Documents/References/Bibtex/My_Library.bib"]
+link-citations: true
+---
+
+
+```{r knitrSetup, include=FALSE, echo = FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, fig.width = 8.5, fig.height=4.5)
+knitr::read_chunk("Statistics/src/LMM_PA.R")
+```
+
+```{r loadLibraries, include=FALSE}
+```
+```{r loadLibraries2, include=FALSE}
+require(clusterProfiler)
+require(data.table)
+require(ggplot2)
+require(ComplexUpset)
+require(vegan)
+```
+
+
+
+# Introduction
+
+I created context specific models of different IBD patients (longitudinal data) from biopsy samples. Afterwards I used the presence/absence information of the different reactions to gain information what of these are associated with the disease activity score of the patients. I did this analysis using LMM to explain HB/Mayo scores by the presence/absence of the reaction.
+
+# Results
+
+The general idea was to cluster the reaction for presences and absence for correlation to each other, in order to reduce the dimensionality a little. So it might be a good idea to get see how many clusters there are and how large each of them is.
+
+```{r loadData}
+
+subsystems <- fread("./Statistics/dat/subsystems.csv")
+cluster <- fread("Statistics/results/PA_DBSCAN_Cluster.csv")
+stats <- fread("Statistics/results/PA_LMMsRandomPatient_fullCoefTable.csv")
+sigs <- stats[padj<= 0.05,]
+
+cluster.size <- cluster[, .(cluster_size = .N), by=ClusterID]
+cluster.size.hist <- ggplot(cluster.size, aes(x=cluster_size)) +
+    geom_histogram(binwidth = 10) +
+    labs(x= "Cluster size", y= "Counts", title = "Number of reactions in cluster")+
+    theme_bw()
+
+cluster.size.ecdf <- ggplot(cluster.size, aes(x=cluster_size)) +
+    stat_ecdf()+
+    labs(x= "Cluster size", y= "Fraction of data covered", title = "Number of reactions in cluster")+
+    theme_bw()
+
+cowplot::plot_grid(cluster.size.hist,
+                   cluster.size.ecdf,
+                   ncol = 2)
+
+```
+
+It is worthwhile to get an impression how much reduction in dimensionality was achieved.
+
+```{r clusterSum}
+
+clusterSummary <- data.frame(
+                             rxns = nrow(cluster),
+                             cluster = max(cluster[,cluster]),
+                             rxns_in_cluster = nrow(cluster[cluster != 0,]),
+                             reduction = round((max(cluster[,cluster])+nrow(cluster[cluster == 0, ]))/ nrow(cluster),2),
+                             significant_rxns_and_cluster = nrow(sigs),
+                             significant_rxns = nrow(cluster[rep.rxn %in% sigs[,rn],]),# nrow(sigs[!rn %in% cluster[,ClusterID],]) + nrow(cluster[ClusterID %in% sigs[,rn]]),
+                             largest_cluster = max(cluster.size[,cluster_size]),
+                             smalles_cluster = min(cluster.size[,cluster_size]),
+                             mean_cluster = round(mean(cluster.size[,cluster_size]),2),
+                             median_cluster = median(cluster.size[,cluster_size])
+                             )
+
+clusterSummary <- t(clusterSummary)
+colnames(clusterSummary) <- c("Value")
+DT::datatable(clusterSummary)
+
+```
+
+
+So generally there are many small clusters and just a few larger ones. I identified `r nrow(sigs)` reactions/clusters to be significantly associated to a change in HB/Mayo scores if present. That translates to a total of `r clusterSummary["significant_rxns",]` reactions which are associated to the HB/Mayo changes.
+I next asked how is the distribution of coefficients in the identified cluster/rxns is.
+
+```{r histPvals}
+
+sigs.hist <- ggplot(sigs, aes(x=Estimate)) + 
+    geom_histogram(binwidth=0.1)+
+    labs(x = "Fold change in HB/Mayo if reaction is present", y = "Counts") +
+    theme_bw()
+sigs.hist
+
+```
+
+Of these `r nrow(sigs[rn %in% cluster[,ClusterID]])` are clusters which can be associated to HB/Mayo. There are `r nrow(cluster[ClusterID %in% sigs[,rn]])` reactions clustered in the clusters.
+There is a slight shift to the left side of the distribution, meaning that there are more reactions which, if present are associated with lower disease activities.
+
+
+# Subsystem presences
+
+## Reaction counting in subsystems
+
+Let us look into the subsystems which are encoded within the reactions/cluster which are significantly associated to HB/Mayo.
+
+```{r subsystems, fig.width = 10, fig.height =6}
+
+# get all significant reactions
+rxns <- cluster[rep.rxn %in% sigs[,rn], Rxn]
+
+# get the annotation for these reactions
+setkey(subsystems, "reaction")
+subs <- subsystems[rxns]
+
+# merge the stats with the reactions - use the clusterID to merge as well
+subs <- merge(subs, cluster, by.x = "reaction", by.y = "Rxn", all.x=T)
+subs <- merge(subs, sigs, by.x = "reaction", by.y = "rn") 
+
+# create a barplot to get an idea for the subsystems
+subsBarDat <- subs[,.(count = .N, mean_estimate = mean(Estimate)), by=subsystem]
+subsBarDat <- subsBarDat[,subsystem := factor(subsystem, levels= unique(subsystem)[order(count, decreasing = TRUE)]),]
+
+subs_barplot <- ggplot(subsBarDat, aes(y= count,x = subsystem, fill = mean_estimate)) +
+    geom_bar(stat="identity") +
+    scale_fill_gradient2(high="red",low="blue")+
+    theme_bw()+
+    theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1))
+subs_barplot
+
+# order the subsystems for mean estimate association
+subs_order <- subs[, .(mean_est = mean(Estimate)), by = subsystem]
+subs[,subsystems := factor(subsystem, levels=unique(subs_order[order(mean_est,decreasing=TRUE), subsystem]))]
+
+subs_jitterplot <- ggplot(subs, aes(x=subsystems, y= Estimate)) +
+    geom_hline(yintercept=0, color = "red", linetype=2)+
+    geom_boxplot(outlier.shape = NULL)+
+    geom_jitter(height=0, width=0.3)+
+    theme_bw()+
+    theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1),
+          legend.position = "none")
+subs_jitterplot
+
+```
+
+## Subsystem enrichment
+
+OK this plot is somewhat misleading, as it does not reflect anything on how large a subsystem is and how many reactions of these are actually significantly associated. Thus I will perform an hypergeometric enrichment analysis on the significant reactions.
+
+```{r geomEnrichment}
+
+hgt <- enricher(rxns, TERM2GENE = subsystems)
+clusterProfiler::dotplot(hgt, x = "Count") +
+    labs(x="Number of reactions", size = "RxnRatio") 
+
+```
+
+This looks a lot like the results obtained before by the colormore22.
+
+## GSEA on Subsystems
+
+To give this association between number of reactions significantly associated and the subsystem involved more statistical foundations, I performed a gene set enrichment analysis. Here is a ridgeplot of the results.
+
+```{r ridgeGSEA}
+
+gsea <- readRDS("Statistics/results/PA_GSEASubsystems.RDS")
+ridgeplot(gsea, label_format=90) + theme(axis.text.y= element_text(size = 12))
+
+```
+
+So there is definitely some overlap, but far less subsystems are enriched in this analysis compared to just the reactions to subsystem mapping. So lets check how large the overlap between all methods is.
+
+```{r upsetplot}
+
+require(ComplexUpset)
+
+# get the subsystems of each analysis
+subsystems.names <- unique(subsystems[,subsystem])
+tbl.gsea <- data.table(as.data.frame(gsea))
+tbl.hgt <- data.table(as.data.frame(hgt))
+
+mat <- matrix(FALSE, nrow = length(subsystems.names), ncol = 3, dimnames = list(x=subsystems.names, y=c("Counts","HGT","GSEA")))
+
+mat[unique(subs[!is.na(subsystem),subsystem]),"Counts"] <- TRUE
+mat[tbl.gsea[,ID], "GSEA"] <- TRUE
+mat[tbl.hgt[,ID], "HGT"] <- TRUE
+
+upset(as.data.frame(mat), intersect = colnames(mat))
+
+```
+
+Interestingly, there are `r nrow(mat[which(rowSums(mat) == 1 & mat[,"GSEA"]==1),])` subsystems which contain no single reaction which can be associated to HB/Mayo on its own, but in total contribute to the change in HB/Mayo. These are the following:`r names(which(rowSums(mat) == 1 & mat[,"GSEA"]==1))`. Furthermore, there are `r length(which(rowSums(mat)==2 & rowSums(mat[, c("Counts","HGT")]) == 2))` subsystems which are only present in the HGT analysis. These are: `r names(which(rowSums(mat)==2 & rowSums(mat[, c("Counts","HGT")]) == 2))`.
+
+Common in all three analysis are: `r names(which(rowSums(mat)==3))`.
+
+
+# Distance for discrimination
+
+So we can now check whether these analysis gives the most valuable discrimination for low and high HB/Mayo scores. To this end I will perform a PERMANOVA on the Jaccard distances between the different samples for the different subsets of reactions. At the same time, I will plot a PC-ordination of the distances to visualize the result.
+
+```{r distances}
+
+
+# read the original extraction matrix
+mat.rxns <- read.csv("../results/ModelAnalysis/rxnIdMat.GL10-L50-GU90.MatjesAbsorption.colormore3D.csv", row.names = 1)
+
+mat.rxns2 <- mat.rxns
+mat.rxns[,] <- 0
+mat.rxns[mat.rxns2 == "True"] <- 1
+rm(mat.rxns2)
+
+# load meta data
+clinic <- fread("../resources/ClinicalData.csv")
+meta <- fread("../resources/META_emed_future.csv")
+blcklst <- fread("../resources/sampleBlacklist.csv")
+
+# merge meta and clincal data
+meta[,PatientID_Time := paste(PatientID, Time_seq, sep ="_")]
+meta <- meta[Time_seq != -1,]
+meta <- merge(meta,clinic, by="PatientID_Time", all.x=TRUE, suffix = c(".meta",""))
+
+# remove degraded samples
+blckSmpls <- blcklst[relevance < 2, Sample]
+meta <- meta[!(SeqID %in% blckSmpls),]
+mat.rxns <- mat.rxns[,!(colnames(mat.rxns) %in% blckSmpls)]
+meta <- meta[SeqID %in% colnames(mat.rxns),]
+
+# sort the rxns counts to correspond to the meta data
+mat.rxns <- mat.rxns[,meta[,SeqID]]
+
+# generate a list for each reaction sets
+lst.rxns <- list(
+                 "Counts" = rxns,
+                 "HGT" = subsystems[subsystem %in% data.frame(hgt)[,"ID"],reaction],
+                 "GSEA" = subsystems[subsystem %in% data.frame(gsea)[,"ID"],reaction],
+                 "All" = rownames(mat.rxns)
+                 )
+
+pca.plots <- list()
+adonis.stats <- list()
+# set the permutations correctly
+perm <- how(nperm =999, blocks = meta[,PatientID])
+for(set in names(lst.rxns)){
+    vec.rxns <- lst.rxns[[set]]
+    # get the distances
+    dist.jacc <- dist(t(mat.rxns[vec.rxns,]), method = "binary")
+    adonis.stats[[set]] <- adonis2(data=meta,
+                            dist.jacc~HB_Mayo_impu,
+                            permutations = perm)
+    pca <- prcomp(dist.jacc, scale = TRUE, center = TRUE)
+    pca.var <- (pca[["sdev"]]^2/sum(pca[["sdev"]]^2)) * 100
+    pca.x <- data.table(pca[["x"]], keep.rownames = TRUE)
+    pca.x <- merge(pca.x, meta, by.x = "rn", by.y = "SeqID")
+    pca.plots[[set]] <- ggplot(pca.x, aes(x = PC1, y = PC2, color = HB_Mayo_impu, shape = Diagnosis)) +
+        geom_point(size = 2) +
+        theme_bw() +
+        labs(x = paste0("PC1 (",round(pca.var[1],2),"%)"),
+             y = paste0("PC2 (",round(pca.var[2],2),"%)"),
+             color = "HB/Mayo",
+             title = set
+             ) +
+        scale_color_gradient(low = "blue", high = "red")
+}
+
+adonis.sum <- do.call(rbind,lapply(adonis.stats,function(x) x[1,]))
+DT::datatable(adonis.sum)
+
+cowplot::plot_grid(plotlist=pca.plots)
+
+ggplot(pca.x, aes(x = PC1, y = PC2, color =Treatment, shape = Diagnosis)) +
+        geom_point(size = 2) +
+        theme_bw() +
+        labs(x = paste0("PC1 (",round(pca.var[1],2),"%)"),
+             y = paste0("PC2 (",round(pca.var[2],2),"%)"),
+             color = "HB/Mayo",
+             title = set
+             ) 
+
+
+
+```
+
+
+

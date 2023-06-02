@@ -1,0 +1,92 @@
+---
+title: Estimation of different thresholds to define core genes for context specific model extraction
+author: Jan Taubenheim
+date: "`r Sys.Date()`"
+output: 
+    rmdformats::downcute:
+        highlight: tango
+        use_bookdown: TRUE
+bibliography: ["/home/taube/Documents/References/Bibtex/My_Library.bib"]
+link-citations: true
+---
+
+
+```{r knitrSetup, include=FALSE, echo = FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, fig.width = 10, fig.height=5)
+knitr::read_chunk("R_code/analyseThresholds.R")
+```
+
+```{r loadLibraries, include = FALSE, echo = FALSE}
+```
+
+
+# Introduction
+
+## Experimental setup/framework
+
+The overall goal of this research is to investigate differences in metabolism caused by inflammatory bowel diseases. To this end, we obtained transcriptomic data from biopsies in the gut of the patients which will serve as an input for the extraction of context specific metabolic models of the tissue. These can be used to identify metabolic reactions/pathways which are involved in the disease and might provide new therapeutic targets.
+
+To extract the context specific models from transcriptomic data with fastcore [@vlassis_fast_2014] one needs to define a core set based on the expression of the different genes involved in the metabolism. In order to do so, one usually applies some kind of threshold, which defines genes which are considered "active". This threshold is arbitrarily chosen, thus it makes sense to check for the influence on the downstream analysis.
+
+## Thresholds and other preconditions
+
+Here I applied several thresholding ideas, which were following the ideas of @richelle_assessing_2019. In short, either there is a global threshold over all genes/transcripts (used synonymously here) and everything above is considered active in goes into the core set. Then there is the option to use a local threshold for those genes which are above the global threshold, if a gene in a sample is above that threshold (comparing to the same gene in other samples) it is considered active. The last option is the introduction of a second global threshold, which defines a always active state. This means, if a gene is above the global upper threshold, it is always considered active, if it is below the global lower threshold it is considered inactive, if it is in between these two, the local threshold is applied. Usually these thresholds are some kind of percentile of the underlying data (all genes and samples for the global threshold, and all samples but just the respective gene in the local threshold). I used the following abbreviation to denote these:
+
+- GL## - global lower threshold with ##-percentile (GL25 corresponds to 25th percentile)
+- L## - local threshold with ##-percentile
+- GU## - global upper threshold with ##-percentile
+
+In addition to these thresholds, I had to choose between different models which are currently in use. These are:
+
+- Recon3D [@brunk_recon3d_2018]
+- Colormore3D - which is derivative of Recon3D with extra exchange reactions to the lumen of the gut to include the diet in the modeling
+- Colormore22 - which is derivative of Recon2.2[@swainston_recon_2016] with extra exchange reaction to the lumen to include the diet in the modeling
+
+Main target of our analysis are the results of a flux variability analysis and the presence/absence of reactions in the extracted models. I used these matrices (presence/absence, range of the FVA per reaction and center of the FVA per reaction) to build machine learning models and predict the disease activity scores for the different patients. To this end I split the data set 5 times into a training and a test set, build the model on the training set and evaluated it against the test set. Afterwards, I used $R^2$, $RMSE$, and $bias$ measures to evaluate the predictive value for each model and threshold. The better these statistics are, the better the predictive value of the data set in question, thus the better the threshold/model setup to make inferences on the data. Currently following ML approaches have been used:
+
+- random forest
+- K-nearest neighbour
+
+# Results
+
+```{r loadData}
+```
+
+Following the plots describing the different values are shown.
+
+$R^2$ values should be as close to 1 as possible to give a good model.
+
+```{r R2plot}
+```
+
+$RMSE$ values should be as low as possible, they represent how much the ML-model guessed it wrong.
+
+```{r RMSEplot}
+```
+
+$bias$ should close to 0, it represents, whether the model is generally over- or underestimating the disease activity (>0 and <0 respectively).
+
+```{r biasPlot}
+```
+
+I made up a score to combine these three measures for model accuracy to have only one number to rely on - the score is calculates the following:
+
+$s=\frac{R^2}{RMSE+\sqrt{bias^2}}$
+
+```{r scorePlot}
+```
+
+Finally we can print the mere numbers summarized in a table.
+
+```{r summaryTable}
+```
+
+And we can test for statistics
+
+```{r bestByLMcmplx}
+```
+
+Or more simple:
+
+```{r bestByLMsimple}
+```

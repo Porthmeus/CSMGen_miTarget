@@ -1,0 +1,10 @@
+channels:
+    - conda-forge
+    - bioconda
+dependencies:
+    - r-domc
+    - r-data.table
+    - r-lme4
+    - r-lmertest
+    - r-foreach
+    - r-vegan

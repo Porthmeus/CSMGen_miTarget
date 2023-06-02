@@ -1,0 +1,203 @@
+---
+title: Comparison LMM and LQMM
+author: Jan Taubenheim
+date: "`r Sys.Date()`"
+output: 
+        html_document:
+                toc: true
+                theme: united
+---
+
+
+```{r knitrSetup}
+
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, fig.width = 10, fig.height=5)
+```
+
+```{r loadLibraries}
+
+require(lqmm)
+require(lme4)
+require(lmerTest)
+require(data.table)
+require(limma)
+require(ggplot2)
+
+```
+
+```{r loadData}
+
+fva <- readRDS("../results/FVA/FVA_MatjesAbsorption.colormore22-zeroBiomass.RDS")
+LQMM <- fread("../results/FVA/LQMMmodelsRangeFVA_MatjesAbsorption.colormore22-zeroBiomass.csv")
+LMM <- fread("../results/FVA/LMMmodelsRangeFVA_MatjesAbsorption.colormore22- _zeroBiomass.csv")
+
+
+meta <- fread("../resources/META_emed_future.csv")
+meta[,PatientID_Time := paste(PatientID, Time_seq, sep ="_")]
+meta <- meta[Time_seq != -1,]
+clinic <- fread("../resources/ClinicalData.csv", drop=1)
+meta <- merge(meta,clinic, by="PatientID_Time", all.x=TRUE, suffix = c(".meta",""))
+
+
+# remove degraded samples
+blcklst <- fread("../resources/sampleBlacklist.csv")
+blckSmpls <- blcklst[relevance < 2, Sample]
+#blckSmpls <- c(blckSmpls, "H18597.L1_S29_L003","H18606.L1_S38_L004")
+meta <- meta[!(SeqID %in% blckSmpls),]
+
+subsystem <- fread("../resources/Subsystems.csv")
+
+```
+
+# Common reactions
+
+```{r VennDiagram}
+
+mat <- matrix(FALSE, ncol = 2, nrow= length(unique(c(LMM[,variable],LQMM[,variable]))),
+              dimnames = list(unique(c(LMM[,variable],LQMM[,variable])), c("LMM","LQMM")))
+mat[LQMM[padj<=0.05,variable],"LQMM"] <- T
+mat[LMM[padj<=0.05,variable],"LMM"] <- T
+
+```
+
+There is a great overlap ~`r round(sum(apply(mat,1,all))/sum(apply(mat,1,any)),3)*100`% but there is also a certain non-overlap. Lets look at the overlap first.
+
+Lets look at the coefficients first.
+```{r coefficients}
+
+# create the coefficients for the LMM
+rxns <- rownames(mat)[apply(mat,1,all)]
+fva_range <- fva[rxns,,"range"]
+fva_range <- data.table(data.frame(t(fva_range)), keep.rownames=TRUE)
+fva_range <- merge(fva_range, meta[Tissue =="Biopsy",], by.x = "rn", by.y = "SeqID")
+setkey(LMM, "variable")
+LMM[,coefficient := 0]
+for(reac in rxns){
+    if(strsplit(reac,split = "")[[1]][1] %in% as.character(0:9)){
+       reac_x <- gsub("\\((.*)\\)",".\\1.",paste0("X",reac))
+    } else {
+        reac_x <-gsub("\\((.*)\\)",".\\1.",reac) 
+    }
+    fom <- as.formula(paste(reac_x, "~ HB_Mayo_impu + (1|PatientID)"))
+    mod <- lmer(data = fva_range, formula = fom)
+    LMM[reac, coefficient := fixef(mod)[2]]
+}
+
+
+setkey(LQMM, "variable")
+
+coefs <- rbind(LMM = as.data.frame(LMM[rxns,.(variable,coefficient)]),LQMM = as.data.frame(LQMM[rxns,.(variable,coefficient)]))
+coefs[["Method"]] <- sapply(rownames(coefs),function(x) strsplit(x, split = "\\.")[[1]][1])
+coefs[["coefficient"]] <-as.numeric(coefs[["coefficient"]] )
+coefs_p <- ggplot(coefs, aes(x=coefficient, fill= Method)) +
+    geom_histogram(bins = 100, alpha = 0.5)
+coefs_p
+coefs_p <- ggplot(coefs, aes(x=coefficient, color= Method)) +
+    stat_ecdf(geom="step")
+coefs_p
+coefs_p <- ggplot(coefs, aes(x=variable,y=coefficient, color= Method)) +
+    geom_point()
+coefs_p
+
+```
+
+Looks like the ECDF for the LMM is much smoother and less centered around 0  - this is basically a good sign as it shows that the coefficients are biologically relevant away from 0. On the other hand its a bit worrisome, as it would mean that the distributions are not symmetric - meaning that the LQMM has a different center to the distribution.
+
+Lets check on that as well.
+
+```{r curtosisSkewResid}
+
+rxns <- rownames(mat)[apply(mat,1,all)]
+fva_range <- fva[rxns,,"range"]
+fva_range <- apply(fva_range,2,scale)
+rownames(fva_range) <- rxns
+fva_range <- data.table(data.frame(t(fva_range)), keep.rownames=TRUE)
+fva_range <- merge(fva_range, meta[Tissue =="Biopsy",], by.x = "rn", by.y = "SeqID")
+
+mods <- list()
+for(reac in rxns){
+    if(strsplit(reac,split = "")[[1]][1] %in% as.character(0:9)){
+       reac_x <- gsub("\\((.*)\\)",".\\1.",paste0("X",reac))
+    } else {
+        reac_x <-gsub("\\((.*)\\)",".\\1.",reac) 
+    }
+    fom <- as.formula(paste(reac_x, "~ HB_Mayo_impu + (1|PatientID)"))
+    mod <- lmer(data = fva_range, formula = fom)
+    mods[[reac]] <- mod
+}
+
+kurt <- sapply(mods, function(x) psych::kurtosi(resid(x)))
+skew <- sapply(mods, function(x) psych::skew(resid(x)))
+wcx<- sapply(mods, function(x) wilcox.test(resid(x))[["p.value"]])
+
+# filter out the models which are very far off
+falseMods <- unique(c(names(wcx)[wcx <0.05], names(skew)[abs(skew)>1], names(kurt)[abs(kurt)>1]))
+
+sel <- !coefs[["variable"]] %in% falseMods
+coefs_p <- ggplot(coefs[sel,], aes(x=coefficient, fill= Method)) +
+    geom_histogram(bins = 100, alpha = 0.5)
+coefs_p
+coefs_p <- ggplot(coefs[sel,], aes(x=coefficient, color= Method)) +
+    stat_ecdf(geom="step")
+coefs_p
+coefs_p <- ggplot(coefs[sel,], aes(x=variable,y=coefficient, color= Method)) +
+    geom_point()
+coefs_p
+
+```
+
+Filtering out the models which are not symmetric in their residual structure really changes things. Now it looks pretty much the same with the coefficients and rather the other way around, that the LQMM models give better results in terms of greater coefficients distance from 0.
+
+# Differences
+
+Lets look at the differences. What are the subsystem differences?
+```{r diffSubsystems}
+
+# first filter out again those models of the LMM which are too far off with their residual structure
+rxns <- LMM[padj <= 0.05, variable]
+fva_range <- fva[rxns,,"range"]
+fva_range <- apply(fva_range,2,scale)
+rownames(fva_range) <- rxns
+fva_range <- data.table(data.frame(t(fva_range)), keep.rownames=TRUE)
+fva_range <- merge(fva_range, meta[Tissue =="Biopsy",], by.x = "rn", by.y = "SeqID")
+mods <- list()
+for(reac in rxns){
+    if(strsplit(reac,split = "")[[1]][1] %in% as.character(0:9)){
+       reac_x <- gsub("\\((.*)\\)",".\\1.",paste0("X",reac))
+    } else {
+        reac_x <-gsub("\\((.*)\\)",".\\1.",reac) 
+    }
+    fom <- as.formula(paste(reac_x, "~ HB_Mayo_impu + (1|PatientID)"))
+    mod <- lmer(data = fva_range, formula = fom)
+    mods[[reac]] <- mod
+}
+kurt <- sapply(mods, function(x) psych::kurtosi(resid(x)))
+skew <- sapply(mods, function(x) psych::skew(resid(x)))
+wcx<- sapply(mods, function(x) wilcox.test(resid(x))[["p.value"]])
+
+# filter out the models which are very far off
+falseMods <- unique(c(names(wcx)[wcx <0.05], names(skew)[abs(skew)>1], names(kurt)[abs(kurt)>1]))
+rxns <- rownames(mat)[mat[,"LMM"] & !mat[,"LQMM"]]
+rxns <- rxns[!rxns %in% falseMods]
+
+setkey(subsystem, "rxns")
+LMM_bar <- ggplot(data = subsystem[rxns,],aes(x=subSys, fill = subSys)) + geom_bar() +
+    theme(legend.position = "none",
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust=1))
+
+rxns2 <- rownames(mat)[!mat[,"LMM"] & mat[,"LQMM"]]
+LQMM_bar <- ggplot(data = subsystem[rxns2,],aes(x=subSys, fill = subSys)) + geom_bar()+
+    theme(legend.position = "none",
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust=1))
+cowplot::plot_grid(LMM_bar,LQMM_bar)
+
+#subsysCounts <- merge(data.frame(table(subsystem[rxns,subSys]))
+#,data.frame(table(subsystem[rxns2,subSys])), by = 1, all=T)
+#colnames(subsysCounts) <- c("subSys","LMM","LQMM")
+#subsysCounts[is.na(subsysCounts)] <- 0 
+#melt(subsysCounts)
+
+```
+
+There is basically the same subsystems enriched, just other reactions. That is nice to see and hints to a similar signal in both ways to analyse the data.
+

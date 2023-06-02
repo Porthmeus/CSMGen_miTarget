@@ -1,0 +1,132 @@
+
+---
+title: Statistical analysis of the count matrix of extracted reactions
+author: Jan Taubenheim
+date: "`r Sys.Date()`"
+output: 
+        html_document:
+                toc: true
+                theme: united
+---
+
+```{r loadLibraries}
+
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, fig.width = 10, fig.height=5)
+
+require(ggplot2)
+require(data.table)
+require(lme4)
+require(lmerTest)
+require(lqmm)
+require(car)
+require(cowplot)
+require(DT)
+require(pheatmap)
+require(limma)
+require(cluster)
+
+```
+
+```{r debug, eval=TRUE, include =FALSE}
+
+# This section is only for debugging purposes
+setClass("snakemake", representation(input = "list", output = "list"))
+snakemake <- new("snakemake", 
+                    input = list(
+                        rxnCount = "../results/data/ModelAnalysis/MatjesAbsorption.colormore22-rxnIdMat.csv",
+                        subSysCount = "../results/data/ModelAnalysis/MatjesAbsorption.colormore22-SubSysMat.csv",
+                        lmmModels = "../results/FVA/LMMmodelsRangeFVA_MatjesAbsorption.colormore22-*Diagnosis_zeroBiomass.csv",
+                        rxn_stats = "../results/FVA/PERMANOVAmodels_MatjesAbsorption.colormore22-distFVA_zeroBiomassvs~HB_Mayo_impu*Diagnosis.csv",
+                        fva = "../results/FVA/FVA_MatjesAbsorption.colormore22-zeroBiomass.RDS",
+                        distFiles = "../results/FVA/Rxndist_MatjesAbsorption.colormore22_zeroBiomass.tar.gz",
+                        meta = "../resources/META_emed_future.csv",
+                        clinic = "../resources/ClinicalData.csv",
+                        subsysTable = "../resources/Subsystems.csv",
+                        sampleBlacklist = "../resources/sampleBlacklist.csv",
+                        GPR = "../resources/colormore22_GPR.csv"
+                    ),
+                    output = list(
+                        html = "results/reports/MatjesAbsorption.colormore22-Natrix_analyseRxnCounts.html"
+                    )
+                )
+
+```
+
+```{r loadData}
+
+meta <- fread(snakemake@input[["meta"]])
+meta[,PatientID_Time := paste(PatientID, Time_seq, sep ="_")]
+meta <- meta[Time_seq != -1,]
+clinic <- fread(snakemake@input[["clinic"]], drop=1)
+meta <- merge(meta,clinic, by="PatientID_Time", all.x=TRUE, suffix = c(".meta",""))
+#meta_merge <- merge(meta,clinic, all.x=TRUE)
+
+subSys <- fread(snakemake@input[["subSysCount"]])
+subSysCount <- as.matrix(subSys[,-1, with =F])
+rownames(subSysCount) <- gsub(" ","_",unlist(subSys[,1]))
+
+rxns <- fread(snakemake@input[["rxnCount"]])
+rxnCount <- as.matrix(rxns[,-1,with=F ])
+rownames(rxnCount) <- gsub(" ","_",unlist(rxns[,1]))
+
+subSystems <- fread(snakemake@input[["subsysTable"]])
+GPR <- fread(snakemake@input[["GPR"]])
+
+# remove degraded samples
+blcklst <- fread(snakemake@input[["sampleBlacklist"]])
+blckSmpls <- blcklst[relevance < 2, Sample]
+meta <- meta[!(SeqID %in% blckSmpls),]
+subSysCount <- subSysCount[,!(colnames(rxnCount) %in% blckSmpls)]
+rxnCount <- rxnCount[,!(colnames(rxnCount) %in% blckSmpls)]
+meta <- meta[SeqID %in% colnames(rxnCount),]
+
+lmmModels <- fread(snakemake@input[["lmmModels"]])
+rxnDistStats <- fread(snakemake@input[["rxn_stats"]])
+fva <- readRDS(snakemake@input[["fva"]])
+distTar <- snakemake@input[["distFiles"]]
+
+```
+
+
+# Find Diagnosis specific reactions
+
+The idea is to find reactions which are specifically associated with the HB/Mayo score within on diagnosis (UC or CD).
+
+```{r venn}
+
+vennMat <- matrix(FALSE, nrow = length(unique(rxnDistStats[,Rxn])), ncol = 2, dimnames = list(unique(rxnDistStats[,Rxn]),c("PERMANOVA","LMM")))
+vennMat[lmmModels[padj <= 0.05 & variable %in% grep(":Diagnosis", variable, value = TRUE), gsub(":Diagnosis","",variable)],"LMM"] <- TRUE
+vennMat[rxnDistStats[padj <= 0.05 & Variable %in% grep(":Diagnosis", Variable, value = TRUE), Rxn],"PERMANOVA"] <- TRUE
+vennDiagram(vennMat, main = "Diagnosis specific reactions associated with HB/Mayo")
+
+```
+
+There is quite some discrepancy between the two different methods - this is surprising, but okay...
+
+```{r plots}
+
+rxns <- rownames(vennMat)[apply(vennMat,1,all)]
+fva_plot <- data.table(reshape2::melt(fva[rxns,,]))
+fva_plot <- merge(fva_plot,meta[Tissue=="Biopsy",],by.x="sample",by.y="SeqID")
+
+ggplot(fva_plot[Diagnosis == "CU",], aes(x=HB_Mayo_impu, y=value, color = Var3)) +
+    facet_wrap(~rxn, scale = "free") +
+    geom_point()+
+    geom_smooth() +
+    theme_bw() +
+    ggtitle("Diagnosis:UC")
+
+ggplot(fva_plot[Diagnosis == "CD",], aes(x=HB_Mayo_impu, y=value, color = Var3)) +
+    facet_wrap(~rxn, scale = "free") +
+    geom_point()+
+    geom_smooth()+
+    theme_bw() +
+    ggtitle("Diagnosis:CD")
+
+```
+
+These reactions are all associated to the fatty acid exchange in short: Carnitine import is reduced in higher inflammation in CU, additionally import and conversion of acyl-carnitine to acyl-CoA within the ER and peroxisomes are reduced. Whatever this means for the treatment. Additionally there is an increased conversion from dihydrofolate to tetrahydrofolate at higher inflammation - this reaction is a target for methotrexate (used for immunsupression).
+
+
+
+

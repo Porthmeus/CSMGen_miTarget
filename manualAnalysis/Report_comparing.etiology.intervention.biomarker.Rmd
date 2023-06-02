@@ -1,0 +1,227 @@
+---
+title: Untitled 
+author: Jan Taubenheim
+date: "`r Sys.Date()`"
+output: 
+    rmdformats::downcute:
+        highlight: tango
+        use_bookdown: TRUE
+bibliography: ["/home/taube/Documents/References/Bibtex/My_Library.bib"]
+link-citations: true
+---
+
+
+```{r knitrSetup, include=FALSE, echo = FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, fig.width = 10, fig.height=5)
+
+```
+
+```{r loadLibraries}
+
+require(data.table)
+require(ggplot2)
+require(ComplexUpset)
+require(clusterProfiler)
+require(psych)
+require(lme4)
+require(lmerTest)
+require(dendextend)
+require(pheatmap)
+
+```
+
+
+```{r loadData}
+
+# annotations
+subsystems <- fread("./Statistics/dat/subsystems.csv")
+rxnAnno <- fread("../../resources/recon-store-reactions-1.tsv")
+
+# read the statistical results
+res.dr <- file.path("Statistics","results")
+coef.files <- list.files(res.dr, pattern = "_coefs.csv")
+lst.coefs <- lapply(coef.files, function(x) fread(file.path(res.dr,x)))
+names(lst.coefs) <- coef.files
+# split the information of the file name into seperate columns
+for(f in coef.files){
+    name.tab <- t(
+                  as.data.frame(
+                                unlist(
+                                       strsplit(
+                                                gsub("_coefs.csv","",f),
+                                                split = "\\."
+                                                )
+                                       )
+                                )
+                  )
+    colnames(name.tab) <- c("data_src","stat_model","est_src","aim")
+    lst.coefs[[f]] <- cbind(lst.coefs[[f]], name.tab)
+    # add some more information to the FVA
+    if(name.tab[1,"data_src"] == "FVA"){
+        lst.coefs[[f]][,coef:=paste(name.tab[1,"data_src"], coef, sep = ".")]
+    } else {
+        lst.coefs[[f]][,coef:=name.tab[1,"data_src"]]
+    }
+}
+# combine to a single table
+clmn.cmn <- unique(unlist(sapply(lst.coefs, colnames)))
+clmn.cmn.diff <- unique(unlist(sapply(lapply(lst.coefs,colnames), setdiff, x = clmn.cmn)))
+clmn.cmn <- setdiff(clmn.cmn,clmn.cmn.diff)
+coefs.all <- do.call(rbind,lapply(lst.coefs, function(x) x[,..clmn.cmn]))
+
+
+
+```
+
+```{r upsetPlotRxns}
+
+# expand the reactions by the clusters
+cluster.files <- list.files(res.dr, pattern="DBSCAN_Cluster.csv")
+lst.clust <- lapply(file.path(res.dr, cluster.files), fread)
+names(lst.clust) <- gsub("(.*)_DBSCAN_Cluster.csv","\\1",cluster.files)
+lst.clust <- lapply(names(lst.clust), function(x) cbind(lst.clust[[x]][,.(rxn,rep.rxn)],cls.src = x))
+clust <- do.call(rbind, lst.clust)
+
+coefs.all<- merge(coefs.all,
+                  clust, by.x = c("rxn","data_src"),
+                  by.y = c("rep.rxn","cls.src"),
+                  keep.x = TRUE,
+                  allow.cartesian= TRUE)
+
+sigs.all <- coefs.all[padj <=0.05,]
+rxns <- coefs.all[,unique(rxn.y)]
+coefs.all[,est_src.aim := (paste(est_src,aim, sep = "."))]
+clmns <-coefs.all[,unique(est_src.aim)] 
+
+# aim + source
+venn.mat <- matrix(0, ncol = length(clmns), nrow = length(rxns), dimnames = list(rxns, clmns))
+for(n in clmns){
+    venn.mat[coefs.all[est_src.aim == n & padj <=0.05, unique(rxn.y)],n] <- 1
+}
+upset(as.data.frame(venn.mat), intersect = clmns)
+
+# aim only
+clmns <-coefs.all[,unique(aim)] 
+venn.mat.aim <- matrix(0, ncol = length(clmns), nrow = length(rxns), dimnames = list(rxns, clmns))
+for(n in clmns){
+    venn.mat.aim[coefs.all[aim == n & padj <=0.05, unique(rxn)],n] <- 1
+}
+upset(as.data.frame(venn.mat.aim), intersect = clmns)
+
+```
+
+```{r enrichment}
+
+
+hgts <- list()
+gseas <- list()
+for(cl in colnames(venn.mat.aim)){
+    hgts[[cl]] <- enricher(rownames(venn.mat.aim)[as.logical(venn.mat.aim[,cl])], TERM2GENE = subsystems)
+    tbl.gsea <- coefs.all[aim == cl,.(vec = sum(Estimate)), by = .(rxn.y)]
+    vec <- tbl.gsea[,vec]
+    names(vec) <- tbl.gsea[,rxn.y]
+    vec <- sort(vec, decreasing = TRUE)
+    gseas[[cl]] <- GSEA(vec, TERM2GENE = subsystems)
+}
+
+venn.mat.subsystems <- matrix(0,
+                              ncol = 6,
+                              nrow = length(unique(subsystems[,subsystem])),
+                              dimnames = list(
+                                              unique(subsystems[,subsystem]),
+                                              paste(colnames(venn.mat.aim),rep(c("hgt","gsea"),3), sep = ".")
+                                              )
+                              )
+
+
+for(cl in names(hgts)){
+    venn.mat.subsystems[as.data.frame(hgts[[cl]])[,"ID"],paste(cl,"hgt",sep = ".")] <- 1
+    venn.mat.subsystems[as.data.frame(gseas[[cl]])[,"ID"],paste(cl,"gsea",sep = ".")] <- 1
+}
+
+upset(as.data.frame(venn.mat.subsystems), intersect = colnames(venn.mat.subsystems))
+
+tbl.venn.mat.subsystems <- data.table(venn.mat.subsystems, keep.rownames = TRUE)
+tbl.venn.mat.subsystems[,Sum := rowSums(venn.mat.subsystems)]
+DT::datatable(tbl.venn.mat.subsystems[Sum>0,])
+
+```
+
+
+
+```{r Metabolites}
+
+topcor <- fread("./Statistics/results/ExCorrelation_summary2.csv")
+topcor[is.na(subsystem), subsystem := "Exchange/demand reaction"]
+
+topcor.venn <- dcast(topcor, rxnBase~aim, value.var = "score_absabs_mean", fill = NA)
+topcor.venn <- as.data.frame(topcor.venn)
+rownames(topcor.venn) <- topcor.venn[,1]
+topcor.venn <- topcor.venn[,-1]
+topcor.venn[is.na(topcor.venn)] <- 0
+topcor.venn[topcor.venn > 0] <- 1
+
+# get the specific metabolites for the different conditions tested
+upset(topcor.venn, intersect=colnames(topcor.venn))
+DT::datatable(topcor.venn[rowSums(topcor.venn) == 1,])
+
+# get the complete topcor tables for these metabolites
+tbls <- list()
+for(cl in colnames(topcor.venn)){
+    rxns <- rownames(topcor.venn)[rowSums(topcor.venn) == 1 & topcor.venn[,cl] == 1]
+    tbls[[cl]] <- topcor[rxnBase %in% rxns & aim == cl,]
+}
+topcor.specific <- do.call(rbind,tbls)
+
+DT::datatable(topcor.specific)
+
+plt.subsystem <-topcor.specific[,.(sum.score.estimate = sum(score_absabs_mean)), by =.(subsystem, aim,est_src)]
+lvs <- plt.subsystem[aim =="biomarker",unique(subsystem[order(sum.score.estimate)])]
+plt.subsystem[, subsystem := factor(subsystem, levels = lvs)]
+
+ggplot(plt.subsystem, aes(y = subsystem, x=log(sum.score.estimate), color = aim, shape = est_src)) +
+    geom_point(size=2) +
+    theme_bw() 
+
+topcor.sumscore <- topcor[subsystem %in% tbl.venn.mat.subsystems[Sum>0, rn],.(sum.score.estimate = sum(score_absabs_mean,na.rm =TRUE)), by =.(subsystem, aim, est_src)]
+lvs <- topcor[,sum(score_absabs_mean), by = .(subsystem)]
+topcor.sumscore[,subsystem := factor(subsystem, levels = lvs[order(V1),subsystem])]
+
+ggplot(topcor.sumscore[order(sum.score.estimate,decreasing =TRUE),], aes(y = subsystem, x=log(sum.score.estimate), color = aim, shape = est_src)) +
+    geom_point(size=2) +
+    theme_bw() 
+
+
+
+
+```
+
+
+
+# Biomarker
+
+```{r biomarker}
+
+rxns <- rownames(venn.mat.aim)[as.logical(venn.mat.aim[,"biomarker"]) & rowSums(venn.mat.aim)==1]
+hgt <- enricher(rxns, TERM2GENE = subsystems)
+dotplot(hgt)
+
+coefs.biomarker <- coefs.all[rxn.y %in% rxns & padj <= 0.05 & aim == "biomarker",]
+rankVec.tb <- coefs.biomarker[,.(vec = sum(Estimate)), by = rxn.y]
+rankVec <- rankVec.tb[,vec]
+names(rankVec) <- rankVec.tb[,rxn.y]
+gsea <- GSEA(sort(rankVec, decreasing =TRUE), TERM2GENE = subsystems)
+if(nrow(as.data.frame(gsea))>0){
+    ridgeplot(gsea)
+}
+
+```
+
+```{r biomarkerMetabolites}
+
+
+
+
+```
+
+

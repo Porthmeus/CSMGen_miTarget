@@ -1,0 +1,313 @@
+---
+title: Statistical analysis of the range of an FVA analysis
+author: Jan Taubenheim
+date: "`r Sys.Date()`"
+output: 
+        html_document:
+                toc: true
+                theme: united
+---
+
+
+# Synopsis
+
+To get an idea about the FVA ranges.
+
+```{r loadLibraries}
+
+log <- file(snakemake@log[[1]], open = "wt")
+sink(log)
+sink(log, type = "message")
+
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, fig.width = 12, fig.height=8)
+
+require(ggplot2)
+require(data.table)
+require(DT)
+require(FactoMineR)
+require(factoextra)
+require(cowplot)
+require(umap)
+require(lme4)
+require(lmerTest)
+require(reshape2)
+#if(!require(lqmm)){
+#    install.packages("lqmm")
+#    require(lqmm)
+#}
+
+
+```
+
+```{r debug, eval=FALSE, include = FALSE}
+
+# This section is only for debugging purposes
+setClass("snakemake", representation(input = "list", output = "list"))
+snakemake <- new("snakemake", 
+                    input = list(
+                        rangeMat = "results/data/FVA/MatjesAbsorption.colormore22-rangeFVA_zeroBiomass.csv",
+                        lqmmModels = "results/data/FVA/MatjesAbsorption.colormore22-LQMMmodelsRangeFVA_zeroBiomass.csv",
+                        meta = "resources/META_emed_future.csv",
+                        clinic = "resources/ClinicalData.csv",
+                        subsysTable = "resources/Subsystems.csv",
+                        sampleBlacklist = "resources/sampleBlacklist.csv"
+                    ),
+                    output = list(
+                        html = "results/reports/MatjesAbsorption.colormore22-Natrix_analyseRxnCounts.html"
+                    )
+                )
+
+```
+
+# Synopsis
+
+Analyse the ranges of a FVA.
+
+```{r loadData}
+
+fva <- read.csv(snakemake@input[["rangeMat"]], row.names=1)
+
+meta <- fread(snakemake@input[["meta"]])
+meta[,PatientID_Time := paste(PatientID, Time_seq, sep ="_")]
+meta <- meta[Time_seq != -1,]
+clinic <- fread(snakemake@input[["clinic"]], drop=1)
+meta <- merge(meta,clinic, by="PatientID_Time", all.x=TRUE, suffix = c(".meta",""))
+
+# remove degraded samples
+blcklst <- fread(snakemake@input[["sampleBlacklist"]])
+blckSmpls <- blcklst[relevance < 2, Sample]
+
+meta <- meta[!(SeqID %in% blckSmpls),]
+meta <- meta[SeqID %in% colnames(fva),]
+fva <- fva[,meta[,SeqID]]
+
+subsys <- fread(snakemake@input[["subsysTable"]])
+
+```
+
+# Analysis
+
+## General statistics
+
+```{r generalPCA}
+
+hist(unlist(fva))
+fva <- fva[apply(fva,1,var) > 1E-6,]
+
+
+pca <- prcomp(t(fva), scale=TRUE, center=TRUE)
+pca_dat <- data.table(pca$x, keep.rownames=TRUE)
+pca_dat <- merge(pca_dat, meta, by.x = "rn", by.y="SeqID")
+explVar <- with(pca, round(sdev^2/sum(sdev^2)*100,2))
+
+
+pcaPlot <- ggplot(pca_dat, aes(x=PC1, y=PC2, color = Cohort, shape = Tissue)) +
+    geom_point(size=2) +
+    theme_bw() +
+    ylab(paste0("PC2 (",explVar[2],"%)")) +
+    xlab(paste0("PC1 (",explVar[1],"%)"))
+pcaPlot
+
+pcaPlot <- ggplot(pca_dat, aes(x=PC1, y=PC2, color = HB_Mayo_impu <= 5, shape = Tissue)) +
+    geom_point(size=2) +
+    theme_bw() +
+    ylab(paste0("PC2 (",explVar[2],"%)")) +
+    xlab(paste0("PC1 (",explVar[1],"%)"))
+pcaPlot
+
+pcaPlot <- ggplot(pca_dat, aes(x=PC1, y=PC2, color = Diagnosis, shape = Tissue)) +
+    geom_point(size=2) +
+    theme_bw() +
+    ylab(paste0("PC2 (",explVar[2],"%)")) +
+    xlab(paste0("PC1 (",explVar[1],"%)"))
+pcaPlot
+
+
+pcaPlot <- ggplot(pca_dat, aes(x=PC1, y=PC2, color = Gender, shape = Tissue)) +
+    geom_point(size=2) +
+    theme_bw() +
+    ylab(paste0("PC2 (",explVar[2],"%)")) +
+    xlab(paste0("PC1 (",explVar[1],"%)"))
+pcaPlot
+
+pcaPlot <- ggplot(pca_dat, aes(x=PC1, y=PC2, color = Remission, shape = Tissue)) +
+    geom_point(size=2) +
+    theme_bw() +
+    ylab(paste0("PC2 (",explVar[2],"%)")) +
+    xlab(paste0("PC1 (",explVar[1],"%)"))
+pcaPlot
+
+for(tiss in c("Biopsy","Blood")){
+
+    pca <- prcomp(t(fva[meta[Tissue == tiss, SeqID]]))
+    pca_dat <- data.table(pca$x, keep.rownames=TRUE)
+    pca_dat <- merge(pca_dat, meta, by.x = "rn", by.y="SeqID")
+    explVar <- with(pca, round(sdev^2/sum(sdev^2)*100,2))
+
+    fviz_contrib(pca, top=100, axes =1:2, choice = "var")
+    pcaPlot <- ggplot(pca_dat, aes(x=PC1, y=PC2, color = Cohort, shape = Diagnosis)) +
+        geom_point(size=2) +
+        theme_bw() +
+        ylab(paste0("PC2 (",explVar[2],"%)")) +
+        xlab(paste0("PC1 (",explVar[1],"%)")) +
+        ggtitle(tiss)
+    print(pcaPlot)
+
+    pcaPlot <- ggplot(pca_dat, aes(x=PC1, y=PC2, color = HB_Mayo_impu <= 5, shape = Diagnosis)) +
+        geom_point(size=2) +
+        theme_bw() +
+        ylab(paste0("PC2 (",explVar[2],"%)")) +
+        xlab(paste0("PC1 (",explVar[1],"%)")) +
+        ggtitle(tiss)
+    print(pcaPlot)
+
+    pcaPlot <- ggplot(pca_dat, aes(x=PC1, y=PC2, color = as.factor(Time_seq), shape = Remission)) +
+        geom_point(size=2) +
+        theme_bw() +
+        ylab(paste0("PC2 (",explVar[2],"%)")) +
+        xlab(paste0("PC1 (",explVar[1],"%)")) +
+        ggtitle(tiss)
+    print(pcaPlot)
+
+}
+
+
+umapLout <- umap(t(fva))$layout
+umapLout <- data.table(umapLout, keep.rownames=TRUE)
+umapLout <- merge(umapLout, meta, by.x = "rn",by.y="SeqID")
+
+umapPlot <- ggplot(umapLout, aes(x=V1,y=V2, color = Cohort, shape = Tissue)) +
+    geom_point(size=2)+
+        theme_bw() +
+        ylab("UMAP2") +
+        xlab("UMAP1")
+umapPlot
+umapPlot <- ggplot(umapLout, aes(x=V1,y=V2, color = HB_Mayo_impu <=5, shape = Tissue)) +
+    geom_point(size=2)+
+        theme_bw() +
+        ylab("UMAP2") +
+        xlab("UMAP1") 
+umapPlot
+umapPlot <- ggplot(umapLout, aes(x=V1,y=V2, color = Remission, shape = Tissue)) +
+    geom_point(size=2)+
+        theme_bw() +
+        ylab("UMAP2") +
+        xlab("UMAP1") 
+umapPlot
+
+for(tiss in c("Biopsy","Blood")){
+    umapLout <- umap(t(fva[,meta[Tissue == tiss, SeqID]]))$layout
+    umapLout <- data.table(umapLout, keep.rownames=TRUE)
+    umapLout <- merge(umapLout, meta, by.x = "rn",by.y="SeqID")
+
+    umapPlot <- ggplot(umapLout, aes(x=V1,y=V2, color = Cohort, shape = Tissue)) +
+        geom_point(size=2)+
+            theme_bw() +
+            ylab("UMAP2") +
+            xlab("UMAP1") +
+            ggtitle(tiss)
+    print(umapPlot)
+
+    umapPlot <- ggplot(umapLout, aes(x=V1,y=V2, color = log10(HB_Mayo_impu+1), shape = Diagnosis)) +
+        geom_point(size=2)+
+            theme_bw() +
+            ylab("UMAP2") +
+            xlab("UMAP1")  +
+            ggtitle(tiss)
+    print(umapPlot)
+    
+    umapPlot <- ggplot(umapLout, aes(x=V1,y=V2, shape = Remission, color = log10(Time_seq+1))) +
+        geom_point(size=2)+
+            theme_bw() +
+            ylab("UMAP2") +
+            xlab("UMAP1")  +
+            ggtitle(tiss)
+    print(umapPlot)
+}
+
+```
+
+## Fit LQMM models to Biopsy FVA ranges
+
+```{r lqmmModels}
+
+lqmm_mods <- fread(snakemake@input[["lqmmModels"]])
+lqmm_mods <- data.frame(lqmm_mods)
+lqmm_mods[, c("coefficient","stdErr","lw_bnd","up_bnd","pval","padj")] <- apply(lqmm_mods[, c("coefficient","stdErr","lw_bnd","up_bnd","pval","padj")],2,as.numeric)
+lqmm_mods <- data.table(lqmm_mods)
+
+mergeDat <- merge(subsys, lqmm_mods, by.x = "rxns", by.y="variable")
+mergeDat[,rxns := factor(rxns, levels=rxns[order(coefficient)])]
+
+p <- ggplot(mergeDat[padj<= 0.05 & abs(coefficient) > 2,], aes(x= rxns ,y=coefficient,color = subSys )) +
+    geom_errorbar(aes(ymin = coefficient - stdErr, ymax =coefficient + stdErr))  +
+    geom_point() + 
+    geom_point(aes(y =lw_bnd),shape = 24) +
+    geom_point(aes(y = up_bnd), shape = 25) +
+    xlab("Reaction") +
+    ylab("Coefficient with std. error and bounds") +
+    theme_bw() + 
+    theme(axis.text.x = element_blank(),
+          legend.position = "none")
+p
+
+mergeTabled <- mergeDat[,.(Count = .N, Fraction = .N/nrow(mergeDat)), by=subSys]
+setkey(mergeTabled, "Fraction")
+
+pp <- ggplot(mergeDat, aes(x=subSys, fill = subSys)) +
+    geom_bar() +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 30, hjust=1, vjust=1),
+          legend.position = "none")
+pp
+
+mergeTabled[,subSys := factor(subSys, levels = subSys[order(Fraction,decreasing=TRUE)])]
+pp <- ggplot(mergeTabled, aes(x = subSys, y= Fraction, fill = subSys)) +
+    geom_bar(stat="identity") +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 30, hjust=1, vjust=1),
+          legend.position = "none")
+pp
+
+
+
+p <- ggplot(mergeDat[padj<= 0.05 & abs(coefficient) > 1,], aes(x= rxns ,y=coefficient,color = subSys )) +
+    geom_errorbar(aes(ymin = coefficient - stdErr, ymax =coefficient + stdErr))  +
+    geom_point() + 
+    geom_point(aes(y =lw_bnd),shape = 24) +
+    geom_point(aes(y = up_bnd), shape = 25) +
+    xlab("Reaction") +
+    ylab("Coefficient with std. error and bounds") +
+    theme_bw() + 
+    theme(axis.text.x = element_blank(),
+          legend.position = "none") +
+    facet_wrap(~subSys, scale="free")
+p
+
+```
+
+
+# Range plots
+
+To get an idea about the stats I will plot the Ranges of the significant reactions against the HB_Mayo_impu scores for the highest coefficients.
+
+```{r rangePlots}
+
+top10 <- round(nrow(mergeDat[padj <= 0.05,])/10)
+topTab <- mergeDat[padj <= 0.05,][order(mergeDat[padj<=0.05,abs(coefficient)],decreasing=TRUE)[1:top10]]
+
+rangDat <- data.table(fva[as.character(topTab[,rxns]),], keep.rownames=TRUE)
+rangDat <- reshape2::melt(rangDat, variable.name="SeqID",value.name="Range",id.vars="rn")
+rangDat <- merge(rangDat,meta)
+rangDat <- merge(rangDat, topTab, by.x="rn",by.y="rxns")
+
+pp <- ggplot(rangDat, aes(x=HB_Mayo_impu, y=Range)) +
+    geom_point() +
+    geom_smooth(method="lm")+
+    facet_wrap(~rn,scale ="free") +
+    theme_bw()
+pp
+
+```
+
+
