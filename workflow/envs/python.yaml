@@ -10,3 +10,6 @@ dependencies:
     - pip
     - pip:
         - "--editable git+https://github.com/Porthmeus/CORPSE.git#egg=corpse"
+variables:
+    PYTHONPATH:
+      - "/zfshome/sukem128/Programs/CPLEX_Studio2211/cplex/python/3.8/x86-64_linux"

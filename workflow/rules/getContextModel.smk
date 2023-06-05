@@ -16,4 +16,6 @@ rule getContextModel:
     log: "logs/getContextModel_{thrld}.{sample}.{diet}.{model}.log"
     conda: "../envs/python.yaml"
     threads: 1
+    resources:
+        mem_mb = 6000
     script: "../scripts/getContextModel.py"

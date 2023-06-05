@@ -17,8 +17,7 @@ rule countSubsystems:
     resources:
         mem_mb = 16000,
         time = "05:00:00",
-        cpus_per_task = 8,
-        task_per_node = 1
+    threads: 8
     conda: "../envs/python.yaml"
     script: "../scripts/countSubsystems2.py"
 

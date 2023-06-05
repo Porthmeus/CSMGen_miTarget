@@ -10,5 +10,7 @@ rule getConsistentModel:
 
     log: "logs/getConsistentModel_{diet}.{model}.log"
     conda: "../envs/python.yaml"
-    threads: 1
+    threads: 12
+    resources:
+        mem_mb = 32000
     script: "../scripts/getConsistentModel.py"

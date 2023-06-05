@@ -11,8 +11,8 @@ import re
 dbg = False
 
 if dbg:
-    TPM = "results/data/TPM_emed_future.csv"
-    conversionTable = "resources/modelGenes2ensembl/colormore3DGenes2ensembl.csv"
+    TPM = "resources/TPM_matrix.csv"
+    conversionTable = "resources/modelGenes2TPM/colormore3DGenes2TPM.csv"
     threshold_string = "GL25-L50-GU75"
     out = "results/data/coreRxns/coreRxns." + threshold_string + ".colormore3D.csv"
     rxnExpr = "results/RxnExpression/rxnExpr."+ threshold_string + ".colormore3D.csv"
