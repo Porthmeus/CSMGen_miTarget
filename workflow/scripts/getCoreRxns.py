@@ -25,7 +25,7 @@ else:
     conversionTable = snakemake.input["conversionTable"]
     threshold_string = snakemake.params["thresholds"]
     out = snakemake.output["CoreRxnMatrix"]
-    rxnExpr = snakemake.output["TPMRxnMatrix"]
+    rxnExpr = snakemake.output["RxnExprMatrix"]
     sbml = snakemake.input["sbml"]
     threads = snakemake.threads
 
