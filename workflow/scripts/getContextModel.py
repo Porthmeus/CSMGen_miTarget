@@ -12,12 +12,12 @@ from corpse import simpleFastcore
 dbg = False
 
 if dbg:
-    model = "resources/models/colormore22.xml"
-    diet = "resources/diets/colormore22_MatjesAbsorption.csv"
+    model = "resources/models/colormore3D.xml"
+    diet = "resources/diets/colormore3D_MatjesAbsorption.csv"
     #core = "results/data/SPLIT_CoreRxns/SPLITGL25|L50|GU75_colormore22-F02243_L1_S10_L002.csv"
-    core = "results/data/coreRxns/coreRxns.GL10-L50.colormore22.csv"
+    core = "results/data/coreRxns/coreRxns.GL10-L50-GU90.colormore3D.csv"
     out = "temp/test.csv"
-    sample = "F02288_L1_S54_L006"
+    sample = "H17446_L1_S13_L003"
     cnst = "results/data/consistentModels/CnstMod.MatjesAbsorption.colormore3D.csv"
 else:
     model = snakemake.input["model"]

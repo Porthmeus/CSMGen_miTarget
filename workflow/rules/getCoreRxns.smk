@@ -11,7 +11,7 @@ rule getCoreRxns:
     output:
         CoreRxnMatrix = "results/data/coreRxns/coreRxns.{thrld}.{model}.csv",
         RxnExprMatrix = "results/RxnExpression/rxnExpr.{thrld}.{model}.csv"
-    log: "logs/getCoreRxns.{thrld}_{model}.csv"
+    log: "logs/getCoreRxns.{thrld}_{model}.log"
     conda: "../envs/python.yaml"
     threads: 8
     resources:

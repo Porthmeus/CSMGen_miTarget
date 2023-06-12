@@ -1,15 +1,14 @@
-name: python
+name: cobraCorpse
 channels:
     - conda-forge
     - bioconda
 dependencies:
-    - python=3.8.10
-    - cobra
+    - python=3.10
     - pandas
     - numpy
     - pip
     - pip:
         - "--editable git+https://github.com/Porthmeus/CORPSE.git#egg=corpse"
+        - "cobra"
 variables:
-    PYTHONPATH:
-      - "/zfshome/sukem128/Programs/CPLEX_Studio2211/cplex/python/3.8/x86-64_linux"
+    PYTHONPATH: /zfshome/sukem128/Programs/CPLEX_Studio2211/cplex/python/3.10/x86-64_linux

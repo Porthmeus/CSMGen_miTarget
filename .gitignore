@@ -2,6 +2,7 @@
 
 results/
 logs/
+workflow/envs/src/
 temp/
 **/logs
 resources/

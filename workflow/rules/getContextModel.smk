@@ -15,7 +15,7 @@ rule getContextModel:
         cntxt = "results/data/ContextSpecificModels/CntxtRxns.{thrld}.{sample}.{diet}.{model}.csv"
     log: "logs/getContextModel_{thrld}.{sample}.{diet}.{model}.log"
     conda: "../envs/python.yaml"
-    threads: 1
+    threads: 2
     resources:
-        mem_mb = 6000
+        mem_mb = 8000
     script: "../scripts/getContextModel.py"
