@@ -29,6 +29,6 @@ To change that behavior or the thresholds change the values in the snakemake fil
 
 # CPLEX support 
 
-The Fastcore implementation was designed to be used with CPLEX, which requires manual installation as it is proprietary software. However, there is an academic license which is free to use if you are working for an academic institution. The registration and the download of CPLEX can be found (here)[https://www.ibm.com/academic/topic/data-science]. To configure python to work with CPLEX you need to tell python where to find your installation. In the environment requirements file `workflow/envs/python.yaml` adjust the `PYTHONPATH` variable to the directory of your installation of CPLEX.
+The Fastcore implementation was designed to be used with CPLEX, which requires manual installation as it is proprietary software. However, there is an academic license which is free to use if you are working for an academic institution. The registration and the download of CPLEX can be found [here](https://www.ibm.com/academic/topic/data-science). To configure python to work with CPLEX you need to tell python where to find your installation. In the environment requirements file `workflow/envs/python.yaml` adjust the `PYTHONPATH` variable to the directory of your installation of CPLEX.
 
 If this is not properly configured/installed, fastcore will fall back onto GLPK as the linear solver. This can also work, but it might just fail as well.
