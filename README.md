@@ -13,6 +13,8 @@ The pipeline expects a `resource` directory where all required files as input ar
 | models/{model}.xml | The pipeline can handle multiple models at once. Every model where the data should be applied to, should be placed in the `resources/models/` subdirectory with the model name as filename. The model name will be used in the pipeline, thus be careful how you call it.|
 | modelGene2TPM/{model}Genes2TPM.csv | Different models use different namespaces, also in the GPRs. To match the gene/transcript identifiers. The table is expected to have a header (column names do not matter) with the first column corresponding to the gene.ids of the model GPRs and the second column being the gene.ids from the TPM_matrix.csv |
 | diet/{model}_{dietName}.csv | Due to the same namespace issues, there needs to be a dedicated diet for each model. This should be placed into this subdirectory and with the corresponding model name and a diet name in the file name.|
+| invalidFastcoreRxns/invalRxns.{diet}.{model}.csv | Is a file you can add to exclude certain reactions from the core set. This is sometimes necessary, as in a very unfortunate constellation of core reactions. In that case fastcore fails, but excluding some reactions can help. If this is not needed add a file which just contains: `,"rxn"` and save it with the correct name. This features is deprecated and will be removed in the next iteration of the pipeline.|
+
 
 After all files have been placed correctly, simply run the snakemake as ususal.
 
