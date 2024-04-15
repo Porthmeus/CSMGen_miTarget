@@ -46,6 +46,13 @@ rxnExpr <- t(scale(t(rxnExpr)))
 
 # cluster the reactions by correlation
 mat.cor <- cor(t(rxnExpr))
+# save the sign of correlation for later
+corr.sign <- melt(data.table(sign(mat.cor),
+                                        keep.rownames = TRUE),
+                             id.var = "rn",
+                             variable.name = "rep.rxn",
+                             value.name = "sign.cor")
+colnames(corr.sign)[1] <- "rxn"
 mat.cor <- 1-sqrt(mat.cor^2)
 
 set.seed(6841) # change in your code
@@ -64,6 +71,10 @@ tbl.cluster <- data.table( cluster = cluster[["cluster"]],
 # get a representative reaction for each cluster
 tbl.cluster[cluster == 0 ,rep.rxn := rxn]
 tbl.cluster[cluster != 0, rep.rxn := names(which.min(rowSums(mat.cor[rxn,rxn]))), by = cluster]
+
+# add back the sign of the correlation
+tbl.cluster <- merge(tbl.cluster, corr.sign)
+
 write.csv(tbl.cluster, file = "../results/rxnExpr_DBSCAN_Cluster.csv")
 
 

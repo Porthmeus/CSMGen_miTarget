@@ -18,5 +18,6 @@ rule createTPMMatrix:
     resources:
         mem_mb = 16000,
         time = "01:00:00",
-    threads:1
+        cpus_per_task = 1,
+        task_per_node = 1
     script:"../scripts/createTPMMatrix.R"

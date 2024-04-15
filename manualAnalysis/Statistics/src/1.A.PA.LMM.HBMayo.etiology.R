@@ -50,6 +50,13 @@ rxnCount <- rxnCount[-near0var_idx,]
 
 # cluster the rxns to reduce the dimensionality and unecessary tests
 corre <- cor(t(rxnCount))
+# save the signs of the correlation
+corr.sign <- melt(data.table(sign(corre),
+                                        keep.rownames = TRUE),
+                             id.var = "rn",
+                             variable.name = "rep.rxn",
+                             value.name = "sign.cor")
+colnames(corr.sign)[1] <- "rxn" 
 corre <- 1-sqrt(corre^2)
 
 set.seed(23501839)
@@ -66,6 +73,11 @@ tbl.cluster <- data.table( cluster = corre.cluster[["cluster"]],
 # get a representative reaction for each of the clusters
 tbl.cluster[cluster == 0 ,rep.rxn := rxn]
 tbl.cluster[cluster != 0, rep.rxn := names(which.min(rowSums(corre[rxn,rxn]))), by = cluster]
+
+
+# add back the sign of the correlation
+tbl.cluster <- merge(tbl.cluster, corr.sign)
+
 write.csv(tbl.cluster, file = "../results/PA_DBSCAN_Cluster.csv")
 
 rxnCount2 <- rxnCount[unique(tbl.cluster[, rep.rxn]),]

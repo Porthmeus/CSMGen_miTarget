@@ -11,8 +11,8 @@ import re
 dbg = False
 
 if dbg:
-    TPM = "resources/TPM_matrix.csv"
-    conversionTable = "resources/modelGenes2TPM/colormore3DGenes2TPM.csv"
+    TPM = "results/data/TPM_emed_future.csv"
+    conversionTable = "resources/modelGenes2ensembl/colormore3DGenes2ensembl.csv"
     threshold_string = "GL25-L50-GU75"
     out = "results/data/coreRxns/coreRxns." + threshold_string + ".colormore3D.csv"
     rxnExpr = "results/RxnExpression/rxnExpr."+ threshold_string + ".colormore3D.csv"
@@ -25,7 +25,7 @@ else:
     conversionTable = snakemake.input["conversionTable"]
     threshold_string = snakemake.params["thresholds"]
     out = snakemake.output["CoreRxnMatrix"]
-    rxnExpr = snakemake.output["RxnExprMatrix"]
+    rxnExpr = snakemake.output["TPMRxnMatrix"]
     sbml = snakemake.input["sbml"]
     threads = snakemake.threads
 

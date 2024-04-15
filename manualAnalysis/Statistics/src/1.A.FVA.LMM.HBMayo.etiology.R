@@ -7,8 +7,8 @@ require(lme4)
 require(lmerTest)
 require(caret)
 require(foreach)
+require(doParallel)
 require(parallel)
-require(doMC)
 require(fpc)
 require(car)
 require(cowplot)
@@ -57,6 +57,19 @@ FVA.center.corr <- cor(t(FVA.center))
 # replace NaN's with the value of the other correlation matrix 
 FVA.range.corr[is.na(FVA.range.corr)] <- FVA.center.corr[is.na(FVA.range.corr)]
 FVA.center.corr[is.na(FVA.center.corr)] <- FVA.range.corr[is.na(FVA.center.corr)]
+# get the sign of the correlations
+FVA.center.corr.sign <- melt(data.table(sign(FVA.center.corr),
+                                        keep.rownames = TRUE),
+                             id.var = "rn",
+                             variable.name = "rep.rxn",
+                             value.name = "sign.cor")
+colnames(FVA.center.corr.sign)[1] <- "rxn" 
+FVA.range.corr.sign <- melt(data.table(sign(FVA.range.corr),
+                                        keep.rownames = TRUE),
+                             id.var = "rn",
+                             variable.name = "rep.rxn",
+                             value.name = "sign.cor")
+colnames(FVA.range.corr.sign)[1] <- "rxn" 
 # transform correlation to distance measure
 FVA.range.corr <- 1-sqrt(FVA.range.corr^2)
 FVA.center.corr <- 1-sqrt(FVA.center.corr^2)
@@ -64,8 +77,9 @@ FVA.center.corr <- 1-sqrt(FVA.center.corr^2)
 FVA.corr <- (FVA.center.corr+FVA.range.corr)/2
 
 # cluster the reactions with dbscan
-set.seed(6218732)
+set.seed(29847527)
 cluster <- dbscan(FVA.corr,method = "dist", eps = 0.1, MinPts = 3)
+set.seed(-1)
 
 # create a reasonable table to export
 tbl.cluster <- data.table( cluster = cluster[["cluster"]],
@@ -79,6 +93,10 @@ tbl.cluster <- data.table( cluster = cluster[["cluster"]],
 # to do so find the reaction in the cluster with the smallest correlation distance to all other clusters
 tbl.cluster[cluster == 0, rep.rxn := rxn]
 tbl.cluster[cluster != 0, rep.rxn := names(which.min(rowSums(FVA.corr[rxn,rxn]))), by = cluster]
+
+# add the signs of the correlation again to the cluster table
+tbl.cluster <- merge(tbl.cluster, FVA.range.corr.sign)
+tbl.cluster <- merge(tbl.cluster, FVA.center.corr.sign, suffix = c(".range",".center"))
 
 # save cluster table
 write.csv(tbl.cluster, file = "../results/FVA_DBSCAN_Cluster.csv")
@@ -110,12 +128,13 @@ FVA <- merge(FVA, meta, by="SeqID")
 
 # fit the models
 threads <- detectCores()-1
-registerDoMC(threads)
+cl <- makeCluster(threads, type = "FORK")
+registerDoParallel(cl)
 
 # before construction of the models, we should define, whether center and ranges are highly correlated - if so there is no need to fit a model for both parameters.
 rxns <- unique(FVA[,rn])
 
-lowCor <- foreach(rxn = rxns,.combine = "c") %do% {
+lowCor <- foreach(rxn = rxns,.combine = "c") %dopar% {
         cntr <- FVA[rn == rxn, center]
         rng <- FVA[rn == rxn, range]
         # look for high correlations in center and range
@@ -137,16 +156,20 @@ lowCor <- foreach(rxn = rxns,.combine = "c") %do% {
             form <- "HB_Mayo_impu ~ range + center + (1|PatientID)"
         }
 }
+stopCluster(cl)
 names(lowCor) <- unique(FVA[,rn])
 
 # don't know why, but parallel execution does not work
-mods <- foreach(rxn =rxns) %do% {
+cl <- makeCluster(threads, type = "FORK")
+registerDoParallel(cl)
+mods <- foreach(rxn =rxns) %dopar% {
     form <- as.formula(lowCor[rxn])
     dat <- FVA[rn == rxn,]
     dat[,HB_Mayo_impu := (HB_Mayo_impu+1)]
     mod <-lmer(data = dat,
              form)
 }
+stopCluster(cl)
 names(mods) <- unique(FVA[,rn])
 
 # save the models object to come back later if needed

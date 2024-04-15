@@ -18,9 +18,10 @@ rule calcFVA_zeroBiomass:
         pfba_fac = None,
         setMaxBounds = True
     resources:
-        mem_mb = "32000",
+        mem_mb = "16000",
         time = "08:00:00",
-    threads: 16
+        task_per_node = 1,
+    threads: 1
     conda: "../envs/python.yaml"
     script: "../scripts/calcFVA.py"
 

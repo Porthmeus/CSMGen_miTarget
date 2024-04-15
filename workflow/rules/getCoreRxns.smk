@@ -5,18 +5,15 @@
 
 rule getCoreRxns:
     input:
-        TPM = "resources/TPM_matrix.csv",
-        conversionTable = "resources/modelGenes2TPM/{model}Genes2TPM.csv",
+        TPM = "results/data/TPM_emed_future.csv",
+        conversionTable = "resources/modelGenes2ensembl/{model}Genes2ensembl.csv",
         sbml = "resources/models/{model}.xml"
     output:
         CoreRxnMatrix = "results/data/coreRxns/coreRxns.{thrld}.{model}.csv",
         RxnExprMatrix = "results/RxnExpression/rxnExpr.{thrld}.{model}.csv"
-    log: "logs/getCoreRxns.{thrld}_{model}.log"
+    log: "logs/getCoreRxns.{thrld}_{model}.csv"
     conda: "../envs/python.yaml"
     threads: 8
-    resources:
-        mem_mb = 16000,
-        time = "02:00:00"
     params:
         thresholds = "{thrld}"
     script:
